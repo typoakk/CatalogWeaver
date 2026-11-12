@@ -94,8 +94,15 @@ docker compose -f compose.yaml -f compose.bind.yaml up --build -d
 
 ```sh
 git pull --ff-only
-docker compose up --build -d
+docker compose build
+docker compose stop importer
+docker compose run --rm migrate
+docker compose up -d --wait
 docker compose ps
 ```
 
 При использовании одной служебной БД прежние worker должны быть остановлены до переключения версии. Стандартный Compose заменяет контейнер импортера, сохраняя данные и секреты в томах. Перед обновлениями, меняющими служебную схему, сохраняйте резервную копию своих данных.
+
+Для паузы фонового импорта задайте `IMPORTER_WORKERS_ENABLED=false` в `.env` и пересоздайте importer. API и preview продолжают работать. Compose ограничивает контейнер по памяти (`IMPORTER_MEMORY_LIMIT`, по умолчанию `1536m`), CPU (`IMPORTER_CPU_LIMIT`, `2.0`) и числу процессов (256). Нативные операции дополнительно ограничены общим количеством дочерних процессов, временем и параметрами кэша ImageMagick. Подробности — [все настройки](settings.md).
+
+[Резервные копии](recovery.md), [поставка и откат](releases.md). Инструменты backup/restore рассчитаны только на стандартные управляемые тома; bind mount вариант требует отдельной процедуры копирования.

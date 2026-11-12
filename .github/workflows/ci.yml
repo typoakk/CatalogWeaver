@@ -33,12 +33,18 @@ jobs:
           dotnet-version: 10.0.x
       - name: Test against PostgreSQL
         run: dotnet test tests/MediaImporter.Tests/MediaImporter.Tests.csproj -c Release -r linux-x64 --logger "trx;LogFileName=checks.trx" --results-directory TestResults
+      - name: Validate maintenance safety contracts
+        run: python3 tests/operations_test.py
       - name: Publish standalone runtime
         run: dotnet publish src/MediaImporter/MediaImporter.csproj -c Release -r linux-x64 --self-contained false -o artifacts/linux-x64
       - name: Verify CLI without application database
         run: dotnet artifacts/linux-x64/CatalogWeaver.dll --help
       - name: Build Docker runtime
         run: docker build --target runtime -t catalogweaver:ci .
+      - name: Verify backup and restore on isolated Docker projects
+        env:
+          CATALOGWEAVER_IMAGE: catalogweaver:ci
+        run: bash tests/operations-smoke.sh
       - name: Verify first Compose startup without dotenv
         env:
           CATALOGWEAVER_IMAGE: catalogweaver:ci

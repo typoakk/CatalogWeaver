@@ -1,0 +1,1121 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "CatalogWeaver adapter",
+  "description": "CatalogWeaver configVersion 1. JSON Schema validates structure; the service validates semantic references, installed profiles and database compatibility.",
+  "type": "object",
+  "properties": {
+    "configVersion": {
+      "const": 1
+    },
+    "provider": {
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9-]{0,23}$"
+    },
+    "displayName": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 120
+    },
+    "enabled": {
+      "type": "boolean"
+    },
+    "kind": {
+      "enum": [
+        "anime",
+        "game",
+        "film",
+        "series",
+        "book",
+        "manga",
+        "music"
+      ]
+    },
+    "refreshHours": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 8784
+    },
+    "baseUrl": {
+      "type": "string",
+      "pattern": "^https://"
+    },
+    "sourceUrlTemplate": {
+      "type": "string",
+      "minLength": 1
+    },
+    "allowedHosts": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "rateLimit": {
+      "type": "object",
+      "properties": {
+        "requestsPerSecond": {
+          "type": "number",
+          "exclusiveMinimum": 0,
+          "maximum": 1000
+        },
+        "requestsPerMinute": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 60000
+        }
+      },
+      "additionalProperties": false
+    },
+    "destinations": {
+      "type": "object",
+      "properties": {
+        "files": {
+          "type": "object",
+          "properties": {
+            "directory": {
+              "type": "string",
+              "minLength": 1,
+              "description": "Within Importer:MediaRoot; .staging is reserved."
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "directory"
+          ]
+        },
+        "database": {
+          "anyOf": [
+            {
+              "$ref": "database.schema.json"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "files"
+      ]
+    },
+    "discovery": {
+      "$ref": "#/$defs/discovery"
+    },
+    "requests": {
+      "type": "object",
+      "additionalProperties": {
+        "$ref": "#/$defs/request"
+      },
+      "minProperties": 1,
+      "maxProperties": 32
+    },
+    "mapping": {
+      "type": "object",
+      "properties": {
+        "fields": {
+          "type": "object",
+          "properties": {
+            "externalId": {
+              "$ref": "#/$defs/field"
+            },
+            "title": {
+              "$ref": "#/$defs/field"
+            },
+            "originalTitle": {
+              "$ref": "#/$defs/field"
+            },
+            "alternativeTitles": {
+              "$ref": "#/$defs/field"
+            },
+            "description": {
+              "$ref": "#/$defs/field"
+            },
+            "genres": {
+              "$ref": "#/$defs/field"
+            },
+            "tags": {
+              "$ref": "#/$defs/field"
+            },
+            "creator": {
+              "$ref": "#/$defs/field"
+            },
+            "year": {
+              "$ref": "#/$defs/field"
+            },
+            "rating": {
+              "$ref": "#/$defs/field"
+            },
+            "episodes": {
+              "$ref": "#/$defs/field"
+            },
+            "releaseStatus": {
+              "$ref": "#/$defs/field"
+            },
+            "country": {
+              "$ref": "#/$defs/field"
+            },
+            "language": {
+              "$ref": "#/$defs/field"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "title"
+          ]
+        },
+        "assets": {
+          "type": "object",
+          "properties": {
+            "poster": {
+              "$ref": "#/$defs/assetMapping"
+            },
+            "hero": {
+              "$ref": "#/$defs/assetMapping"
+            },
+            "logo": {
+              "$ref": "#/$defs/assetMapping"
+            },
+            "header": {
+              "$ref": "#/$defs/assetMapping"
+            },
+            "background": {
+              "$ref": "#/$defs/assetMapping"
+            },
+            "screenshot": {
+              "$ref": "#/$defs/assetMapping"
+            },
+            "video": {
+              "$ref": "#/$defs/assetMapping"
+            }
+          },
+          "additionalProperties": false
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "fields"
+      ]
+    },
+    "assetPolicies": {
+      "type": "object",
+      "properties": {
+        "poster": {
+          "$ref": "#/$defs/policy"
+        },
+        "hero": {
+          "$ref": "#/$defs/policy"
+        },
+        "logo": {
+          "$ref": "#/$defs/policy"
+        },
+        "header": {
+          "$ref": "#/$defs/policy"
+        },
+        "background": {
+          "$ref": "#/$defs/policy"
+        },
+        "screenshot": {
+          "$ref": "#/$defs/policy"
+        },
+        "video": {
+          "$ref": "#/$defs/policy"
+        }
+      },
+      "additionalProperties": false
+    },
+    "variables": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "string"
+      },
+      "propertyNames": {
+        "pattern": "^(?!secret:)[A-Za-z][A-Za-z0-9_:.-]*$"
+      }
+    }
+  },
+  "additionalProperties": false,
+  "required": [
+    "provider",
+    "displayName",
+    "kind",
+    "baseUrl",
+    "sourceUrlTemplate",
+    "destinations",
+    "requests",
+    "mapping"
+  ],
+  "$defs": {
+    "pagination": {
+      "type": "object",
+      "properties": {
+        "type": {
+          "enum": [
+            "page",
+            "cursor"
+          ]
+        },
+        "startPage": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "pageSize": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 10000
+        },
+        "stopOnEmpty": {
+          "type": "boolean"
+        },
+        "nextCursorPath": {
+          "anyOf": [
+            {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 2048,
+              "pattern": "^\\$",
+              "description": "Bounded JSONPath: $.property, $[0], $[*], and quoted property names; runtime checks the supported grammar."
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "hasMorePath": {
+          "anyOf": [
+            {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 2048,
+              "pattern": "^\\$",
+              "description": "Bounded JSONPath: $.property, $[0], $[*], and quoted property names; runtime checks the supported grammar."
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "hasMoreWhenMissing": {
+          "enum": [
+            null,
+            "fullPage"
+          ]
+        },
+        "cursorFromLastId": {
+          "type": "boolean"
+        }
+      },
+      "additionalProperties": false
+    },
+    "discovery": {
+      "type": "object",
+      "properties": {
+        "request": {
+          "type": "string"
+        },
+        "pagination": {
+          "$ref": "#/$defs/pagination"
+        },
+        "itemsPath": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 2048,
+          "pattern": "^\\$",
+          "description": "Bounded JSONPath: $.property, $[0], $[*], and quoted property names; runtime checks the supported grammar."
+        },
+        "externalIdPath": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 2048,
+          "pattern": "^\\$",
+          "description": "Bounded JSONPath: $.property, $[0], $[*], and quoted property names; runtime checks the supported grammar."
+        },
+        "namePath": {
+          "anyOf": [
+            {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 2048,
+              "pattern": "^\\$",
+              "description": "Bounded JSONPath: $.property, $[0], $[*], and quoted property names; runtime checks the supported grammar."
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "modifiedPath": {
+          "anyOf": [
+            {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 2048,
+              "pattern": "^\\$",
+              "description": "Bounded JSONPath: $.property, $[0], $[*], and quoted property names; runtime checks the supported grammar."
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "additionalProperties": false
+    },
+    "supplement": {
+      "type": "object",
+      "properties": {
+        "whenMissingPaths": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 2048,
+            "pattern": "^\\$",
+            "description": "Bounded JSONPath: $.property, $[0], $[*], and quoted property names; runtime checks the supported grammar."
+          }
+        },
+        "whenMissingGroups": {
+          "type": "array",
+          "items": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 2048,
+              "pattern": "^\\$",
+              "description": "Bounded JSONPath: $.property, $[0], $[*], and quoted property names; runtime checks the supported grammar."
+            }
+          }
+        },
+        "fillPaths": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "pattern": "^\\$\\.[A-Za-z_][A-Za-z0-9_]*$"
+          }
+        },
+        "variables": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "string"
+          }
+        },
+        "captureVariables": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 2048,
+            "pattern": "^\\$",
+            "description": "Bounded JSONPath: $.property, $[0], $[*], and quoted property names; runtime checks the supported grammar."
+          }
+        }
+      },
+      "additionalProperties": false
+    },
+    "request": {
+      "type": "object",
+      "properties": {
+        "method": {
+          "enum": [
+            "GET",
+            "POST"
+          ]
+        },
+        "path": {
+          "type": "string",
+          "pattern": "^/(?!/)"
+        },
+        "baseUrl": {
+          "anyOf": [
+            {
+              "type": "string",
+              "pattern": "^https://"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "query": {
+          "type": "object",
+          "additionalProperties": {}
+        },
+        "headers": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "string"
+          }
+        },
+        "body": {},
+        "required": {
+          "type": "boolean"
+        },
+        "graphQl": {
+          "type": "boolean"
+        },
+        "maximumResponseBytes": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 16777216
+        },
+        "responseRootPath": {
+          "anyOf": [
+            {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 2048,
+              "pattern": "^\\$",
+              "description": "Bounded JSONPath: $.property, $[0], $[*], and quoted property names; runtime checks the supported grammar."
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "responseKind": {
+          "enum": [
+            null,
+            "object",
+            "array"
+          ]
+        },
+        "requiredPaths": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 2048,
+            "pattern": "^\\$",
+            "description": "Bounded JSONPath: $.property, $[0], $[*], and quoted property names; runtime checks the supported grammar."
+          }
+        },
+        "allowEmptyRoot": {
+          "type": "boolean"
+        },
+        "availabilityPath": {
+          "anyOf": [
+            {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 2048,
+              "pattern": "^\\$",
+              "description": "Bounded JSONPath: $.property, $[0], $[*], and quoted property names; runtime checks the supported grammar."
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "identityPath": {
+          "anyOf": [
+            {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 2048,
+              "pattern": "^\\$",
+              "description": "Bounded JSONPath: $.property, $[0], $[*], and quoted property names; runtime checks the supported grammar."
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "identityPaths": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 2048,
+            "pattern": "^\\$",
+            "description": "Bounded JSONPath: $.property, $[0], $[*], and quoted property names; runtime checks the supported grammar."
+          }
+        },
+        "successPath": {
+          "anyOf": [
+            {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 2048,
+              "pattern": "^\\$",
+              "description": "Bounded JSONPath: $.property, $[0], $[*], and quoted property names; runtime checks the supported grammar."
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "successValues": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "filterPath": {
+          "anyOf": [
+            {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 2048,
+              "pattern": "^\\$",
+              "description": "Bounded JSONPath: $.property, $[0], $[*], and quoted property names; runtime checks the supported grammar."
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "filterValue": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "alternativeVariables": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "minItems": 1,
+            "maxItems": 16
+          },
+          "maxProperties": 1
+        },
+        "supplement": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/supplement"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "path"
+      ]
+    },
+    "field": {
+      "type": "object",
+      "properties": {
+        "request": {
+          "type": "string"
+        },
+        "path": {
+          "anyOf": [
+            {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 2048,
+              "pattern": "^\\$",
+              "description": "Bounded JSONPath: $.property, $[0], $[*], and quoted property names; runtime checks the supported grammar."
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "paths": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 2048,
+            "pattern": "^\\$",
+            "description": "Bounded JSONPath: $.property, $[0], $[*], and quoted property names; runtime checks the supported grammar."
+          }
+        },
+        "itemsPath": {
+          "anyOf": [
+            {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 2048,
+              "pattern": "^\\$",
+              "description": "Bounded JSONPath: $.property, $[0], $[*], and quoted property names; runtime checks the supported grammar."
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "selection": {
+          "enum": [
+            null,
+            "firstNonEmpty",
+            "all"
+          ]
+        },
+        "transform": {
+          "enum": [
+            null,
+            "plainText",
+            "title",
+            "year",
+            "number",
+            "releaseStatus"
+          ]
+        },
+        "constant": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "additionalProperties": false
+    },
+    "assetSource": {
+      "type": "object",
+      "properties": {
+        "request": {
+          "type": "string"
+        },
+        "itemsPath": {
+          "anyOf": [
+            {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 2048,
+              "pattern": "^\\$",
+              "description": "Bounded JSONPath: $.property, $[0], $[*], and quoted property names; runtime checks the supported grammar."
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "itemsPaths": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 2048,
+            "pattern": "^\\$",
+            "description": "Bounded JSONPath: $.property, $[0], $[*], and quoted property names; runtime checks the supported grammar."
+          }
+        },
+        "urlPath": {
+          "anyOf": [
+            {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 2048,
+              "pattern": "^\\$",
+              "description": "Bounded JSONPath: $.property, $[0], $[*], and quoted property names; runtime checks the supported grammar."
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "urlPaths": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 2048,
+            "pattern": "^\\$",
+            "description": "Bounded JSONPath: $.property, $[0], $[*], and quoted property names; runtime checks the supported grammar."
+          }
+        },
+        "titlePath": {
+          "anyOf": [
+            {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 2048,
+              "pattern": "^\\$",
+              "description": "Bounded JSONPath: $.property, $[0], $[*], and quoted property names; runtime checks the supported grammar."
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "urlTemplates": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "resolveRelativeUrls": {
+          "type": "boolean"
+        },
+        "upgradeHttp": {
+          "type": "boolean"
+        },
+        "emitAllUrls": {
+          "type": "boolean"
+        },
+        "recursiveMediaUrls": {
+          "type": "boolean"
+        },
+        "requireUrl": {
+          "type": "boolean"
+        },
+        "formatPath": {
+          "anyOf": [
+            {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 2048,
+              "pattern": "^\\$",
+              "description": "Bounded JSONPath: $.property, $[0], $[*], and quoted property names; runtime checks the supported grammar."
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "filePaths": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 2048,
+            "pattern": "^\\$",
+            "description": "Bounded JSONPath: $.property, $[0], $[*], and quoted property names; runtime checks the supported grammar."
+          }
+        },
+        "formatToken": {
+          "type": "string"
+        },
+        "urlBase": {
+          "anyOf": [
+            {
+              "type": "string",
+              "pattern": "^https://"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "requiredFormatPrefix": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "requiredFilenamePrefix": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "additionalProperties": false
+    },
+    "assetMapping": {
+      "type": "object",
+      "properties": {
+        "request": {
+          "type": "string"
+        },
+        "itemsPath": {
+          "anyOf": [
+            {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 2048,
+              "pattern": "^\\$",
+              "description": "Bounded JSONPath: $.property, $[0], $[*], and quoted property names; runtime checks the supported grammar."
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "itemsPaths": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 2048,
+            "pattern": "^\\$",
+            "description": "Bounded JSONPath: $.property, $[0], $[*], and quoted property names; runtime checks the supported grammar."
+          }
+        },
+        "urlPath": {
+          "anyOf": [
+            {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 2048,
+              "pattern": "^\\$",
+              "description": "Bounded JSONPath: $.property, $[0], $[*], and quoted property names; runtime checks the supported grammar."
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "urlPaths": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 2048,
+            "pattern": "^\\$",
+            "description": "Bounded JSONPath: $.property, $[0], $[*], and quoted property names; runtime checks the supported grammar."
+          }
+        },
+        "titlePath": {
+          "anyOf": [
+            {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 2048,
+              "pattern": "^\\$",
+              "description": "Bounded JSONPath: $.property, $[0], $[*], and quoted property names; runtime checks the supported grammar."
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "urlTemplates": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "resolveRelativeUrls": {
+          "type": "boolean"
+        },
+        "upgradeHttp": {
+          "type": "boolean"
+        },
+        "emitAllUrls": {
+          "type": "boolean"
+        },
+        "recursiveMediaUrls": {
+          "type": "boolean"
+        },
+        "requireUrl": {
+          "type": "boolean"
+        },
+        "formatPath": {
+          "anyOf": [
+            {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 2048,
+              "pattern": "^\\$",
+              "description": "Bounded JSONPath: $.property, $[0], $[*], and quoted property names; runtime checks the supported grammar."
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "filePaths": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 2048,
+            "pattern": "^\\$",
+            "description": "Bounded JSONPath: $.property, $[0], $[*], and quoted property names; runtime checks the supported grammar."
+          }
+        },
+        "formatToken": {
+          "type": "string"
+        },
+        "urlBase": {
+          "anyOf": [
+            {
+              "type": "string",
+              "pattern": "^https://"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "requiredFormatPrefix": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "requiredFilenamePrefix": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "sources": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/assetSource"
+          }
+        }
+      },
+      "additionalProperties": false
+    },
+    "resolvedProfile": {
+      "type": "object",
+      "properties": {
+        "name": {
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9-]{0,63}$"
+        },
+        "module": {
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9-]{0,23}$"
+        },
+        "driver": {
+          "const": "magick"
+        },
+        "format": {
+          "type": "string"
+        },
+        "contentType": {
+          "type": "string",
+          "pattern": "^image/"
+        },
+        "quality": {
+          "anyOf": [
+            {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 100
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "defines": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "string",
+            "maxLength": 512
+          },
+          "maxProperties": 32,
+          "propertyNames": {
+            "pattern": "^[a-z0-9-]+:[a-z0-9-]+$"
+          }
+        },
+        "version": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}$"
+        },
+        "rejectAlpha": {
+          "type": "boolean"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "name",
+        "module",
+        "driver",
+        "format",
+        "contentType",
+        "quality",
+        "defines",
+        "version"
+      ],
+      "readOnly": true,
+      "description": "Service-generated snapshot instructions; select imageProfile in editable adapter sources."
+    },
+    "policy": {
+      "type": "object",
+      "properties": {
+        "storage": {
+          "enum": [
+            "local",
+            "link"
+          ]
+        },
+        "imageProfile": {
+          "anyOf": [
+            {
+              "type": "string",
+              "pattern": "^[a-z][a-z0-9-]{0,63}$"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "maxItems": {
+          "anyOf": [
+            {
+              "type": "integer",
+              "minimum": 1
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "resolvedImageProfile": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/resolvedProfile"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "additionalProperties": false,
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "storage": {
+                "const": "local"
+              }
+            },
+            "required": [
+              "storage"
+            ]
+          },
+          "then": {
+            "required": [
+              "imageProfile"
+            ],
+            "properties": {
+              "imageProfile": {
+                "type": "string",
+                "pattern": "^[a-z][a-z0-9-]{0,63}$"
+              }
+            }
+          }
+        }
+      ]
+    }
+  }
+}

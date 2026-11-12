@@ -35,6 +35,8 @@ public sealed class EncoderRegistry : BackgroundService
         ? profile : throw new InvalidDataException("Unknown image profile. Install a valid encoder module or select original.");
     public string GetJson(string id) => Volatile.Read(ref catalog).Modules.TryGetValue(id, out var module)
         ? module.Json : throw new KeyNotFoundException("Encoder module is unavailable or invalid.");
+    public string GetVersion(string id) => Volatile.Read(ref catalog).Modules.TryGetValue(id, out var module)
+        ? module.Version : throw new KeyNotFoundException("Encoder module is unavailable or invalid.");
 
     public string[] ValidateJson(string json, string? expectedId = null)
     {
@@ -50,7 +52,7 @@ public sealed class EncoderRegistry : BackgroundService
         catch (Exception error) when (IsModuleFailure(error)) { return [Message(error)]; }
     }
 
-    public async Task SaveAsync(string id, string json, CancellationToken ct)
+    public async Task SaveAsync(string id, string json, CancellationToken ct, string? expectedVersion = null)
     {
         await reload.WaitAsync(ct);
         try
@@ -58,6 +60,23 @@ public sealed class EncoderRegistry : BackgroundService
             var errors = ValidateJson(json, id);
             if (errors.Length > 0) throw new InvalidDataException(string.Join(" ", errors));
             var module = Parse(json, id);
+            if (expectedVersion is not null)
+            {
+                var existingPath = Path.Combine(Root, id, "encoder.json");
+                string? currentVersion = null;
+                if (File.Exists(existingPath))
+                {
+                    if (new FileInfo(existingPath).Length > 128 * 1024 || (File.GetAttributes(existingPath) & FileAttributes.ReparsePoint) != 0)
+                        throw new ConfigurationConflictException(null);
+                    if (expectedVersion == "*") currentVersion = "*";
+                    else
+                    {
+                        try { currentVersion = Parse(await File.ReadAllTextAsync(existingPath, ct), id).Version; }
+                        catch (Exception error) when (IsModuleFailure(error)) { throw new ConfigurationConflictException(null); }
+                    }
+                }
+                ConfigurationConflictException.Check(expectedVersion, currentVersion);
+            }
             Directory.CreateDirectory(Root);
             var folder = Path.Combine(Root, id);
             if (Directory.Exists(folder) && (File.GetAttributes(folder) & FileAttributes.ReparsePoint) != 0)
@@ -71,16 +90,20 @@ public sealed class EncoderRegistry : BackgroundService
                 File.Move(temporary, path, true);
             }
             finally { File.Delete(temporary); }
+            await ReloadLockedAsync(ct);
         }
         finally { reload.Release(); }
-        await ReloadAsync(ct);
     }
 
     public async Task ReloadAsync(CancellationToken ct = default)
     {
         await reload.WaitAsync(ct);
-        try
-        {
+        try { await ReloadLockedAsync(ct); }
+        finally { reload.Release(); }
+    }
+
+    private async Task ReloadLockedAsync(CancellationToken ct)
+    {
             Directory.CreateDirectory(Root);
             var previous = Volatile.Read(ref catalog);
             var modules = new Dictionary<string, Module>(StringComparer.Ordinal);
@@ -132,8 +155,6 @@ public sealed class EncoderRegistry : BackgroundService
             Volatile.Write(ref catalog, new(modules,
                 modules.Values.SelectMany(module => module.Profiles).ToDictionary(profile => profile.Name, StringComparer.Ordinal),
                 registrations.Values.OrderBy(x => x.Id, StringComparer.Ordinal).ToArray()));
-        }
-        finally { reload.Release(); }
     }
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
@@ -191,6 +212,7 @@ public sealed class EncoderRegistry : BackgroundService
     private static bool IsModuleFailure(Exception error) => error is IOException or UnauthorizedAccessException
         or JsonException or InvalidDataException or ArgumentException or ImageMagick.MagickException
         or DllNotFoundException or EntryPointNotFoundException or TypeInitializationException;
-    private static string Message(Exception error) => error is JsonException
-        ? "Invalid encoder JSON or an unknown configuration field." : error is InvalidDataException ? error.Message : error.GetType().Name;
+    private static string Message(Exception error) => error is JsonException invalid
+        ? (invalid.Path ?? "$") + ": invalid encoder JSON, null value or unknown configuration field."
+        : error is InvalidDataException ? error.Message : error.GetType().Name;
 }

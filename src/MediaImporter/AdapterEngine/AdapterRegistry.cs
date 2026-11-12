@@ -40,7 +40,13 @@ public sealed class AdapterRegistry(IConfiguration configuration, ILogger<Adapte
         if (Encoding.UTF8.GetByteCount(json) > 2 * 1024 * 1024) throw new InvalidDataException("Adapter configuration is too large.");
         var definition = JsonSerializer.Deserialize<AdapterDefinition>(json, Json) ?? throw new InvalidDataException("Adapter configuration is empty.");
         string[] errors;
-        try { errors = Validate(definition, expectedProvider); }
+        try
+        {
+            errors = Validate(definition, expectedProvider);
+            // Old queued revisions retain the validation rules under which they were accepted.
+            // New semantic checks apply to drafts and hot-loaded configuration only.
+            if (!pinned) errors = errors.Concat(AdapterSemanticValidation.Validate(definition, MediaRoot)).Distinct().ToArray();
+        }
         catch (Exception error) when (error is NullReferenceException or ArgumentNullException)
         { throw new InvalidDataException("Adapter configuration collections and definitions cannot be null."); }
         if (errors.Length > 0) throw new InvalidDataException(string.Join(" ", errors));
@@ -63,7 +69,7 @@ public sealed class AdapterRegistry(IConfiguration configuration, ILogger<Adapte
     {
         try { FromJson(json, expectedProvider); return []; }
         catch (Exception error) when (error is JsonException or InvalidDataException or ArgumentException or NotSupportedException)
-        { return [error is JsonException ? "Invalid adapter JSON or an unknown configuration field." : error.Message]; }
+        { return [error is JsonException invalid ? (invalid.Path ?? "$") + ": invalid JSON, null value or unknown configuration field." : error.Message]; }
     }
 
     public AdapterSnapshot FromPinnedJson(string json, string provider, string version)
@@ -77,27 +83,69 @@ public sealed class AdapterRegistry(IConfiguration configuration, ILogger<Adapte
         return new(parsed.Definition, version, json);
     }
 
-    public async Task<AdapterSnapshot> SaveAsync(string provider, string json, CancellationToken ct)
+    public async Task<AdapterSnapshot> SaveAsync(string provider, string json, CancellationToken ct, string? expectedVersion = null)
     {
-        var snapshot = FromJson(json, provider);
         await reload.WaitAsync(ct);
         try
         {
-            var folder = Path.Combine(Root, provider);
-            Directory.CreateDirectory(folder);
-            EnsureInsideRoot(folder);
-            var path = Path.Combine(folder, "adapter.json");
-            var temporary = path + "." + Guid.NewGuid().ToString("N") + ".tmp";
-            try
+            var snapshot = FromJson(json, provider);
+            if (expectedVersion == "*")
             {
-                await File.WriteAllTextAsync(temporary, snapshot.Json, new UTF8Encoding(false), ct);
-                File.Move(temporary, path, true);
+                EnsureInsideRoot(Path.Combine(Root, provider));
+                ConfigurationConflictException.Check("*", File.Exists(Path.Combine(Root, provider, "adapter.json")) ? "*" : null);
             }
-            finally { if (File.Exists(temporary)) File.Delete(temporary); }
-            Register(snapshot);
-            return snapshot;
+            else if (expectedVersion is not null)
+                ConfigurationConflictException.Check(expectedVersion, await CurrentVersionAsync(provider, ct));
+            return await SaveLockedAsync(snapshot, ct);
         }
         finally { reload.Release(); }
+    }
+
+    public async Task<AdapterSnapshot> SetEnabledAsync(string provider, bool enabled, CancellationToken ct, string? expectedVersion = null)
+    {
+        if (!ValidProvider(provider)) throw new ArgumentException("Invalid adapter provider.");
+        await reload.WaitAsync(ct);
+        try
+        {
+            var current = Get(provider);
+            var path = Path.Combine(Root, provider, "adapter.json");
+            EnsureInsideRoot(Path.GetDirectoryName(path)!);
+            // Read-modify-write shares the same lock as PUT and reload, so enabled cannot
+            // restore an older client copy of unrelated adapter settings.
+            if (File.Exists(path)) current = FromJson(await File.ReadAllTextAsync(path, ct), provider);
+            ConfigurationConflictException.Check(expectedVersion, current.Version);
+            var changed = FromJson(JsonSerializer.Serialize(current.Definition with { Enabled = enabled }, Json), provider);
+            return await SaveLockedAsync(changed, ct);
+        }
+        finally { reload.Release(); }
+    }
+
+    private async Task<string?> CurrentVersionAsync(string provider, CancellationToken ct)
+    {
+        var folder = Path.Combine(Root, provider);
+        EnsureInsideRoot(folder);
+        var path = Path.Combine(folder, "adapter.json");
+        if (!File.Exists(path)) return null;
+        try { return FromJson(await File.ReadAllTextAsync(path, ct), provider).Version; }
+        catch (Exception error) when (error is InvalidDataException or JsonException or ArgumentException)
+        { throw new ConfigurationConflictException(null); }
+    }
+
+    private async Task<AdapterSnapshot> SaveLockedAsync(AdapterSnapshot snapshot, CancellationToken ct)
+    {
+        var folder = Path.Combine(Root, snapshot.Provider);
+        Directory.CreateDirectory(folder);
+        EnsureInsideRoot(folder);
+        var path = Path.Combine(folder, "adapter.json");
+        var temporary = path + "." + Guid.NewGuid().ToString("N") + ".tmp";
+        try
+        {
+            await File.WriteAllTextAsync(temporary, snapshot.Json, new UTF8Encoding(false), ct);
+            File.Move(temporary, path, true);
+        }
+        finally { if (File.Exists(temporary)) File.Delete(temporary); }
+        Register(snapshot);
+        return snapshot;
     }
 
     public async Task ReloadAsync(CancellationToken ct = default)
@@ -125,7 +173,8 @@ public sealed class AdapterRegistry(IConfiguration configuration, ILogger<Adapte
                     var previous = snapshots.GetValueOrDefault(provider);
                     registrations[provider] = new(provider, previous?.Definition.DisplayName ?? provider,
                         previous?.Definition.Enabled ?? false, previous?.Version,
-                        [error is JsonException ? "Invalid adapter JSON or an unknown configuration field." : error.GetType().Name], DateTime.UtcNow);
+                        [error is JsonException invalid ? (invalid.Path ?? "$") + ": invalid adapter JSON or unknown field."
+                            : error is InvalidDataException ? error.Message : error.GetType().Name], DateTime.UtcNow);
                 }
             }
             foreach (var provider in registrations.Keys.Where(x => !present.Contains(x)))
@@ -158,7 +207,7 @@ public sealed class AdapterRegistry(IConfiguration configuration, ILogger<Adapte
     private void EnsureInsideRoot(string folder)
     {
         var info = new DirectoryInfo(folder);
-        var resolved = info.ResolveLinkTarget(true)?.FullName ?? info.FullName;
+        var resolved = info.Exists ? info.ResolveLinkTarget(true)?.FullName ?? info.FullName : info.FullName;
         if (!Inside(Root, resolved)) throw new InvalidDataException("Adapter folder must be inside the configured adapter directory.");
     }
 
@@ -267,7 +316,7 @@ public sealed class AdapterRegistry(IConfiguration configuration, ILogger<Adapte
     private static void CheckPath(string? path, List<string> errors)
     {
         if (path is null) return;
-        try { AdapterJsonPath.Validate(path); }
+        try { AdapterJsonPath.Validate(Regex.Replace(path, @"\{\{[^{}]+\}\}", "0", RegexOptions.CultureInvariant)); }
         catch (InvalidDataException) { errors.Add("Unsupported JSON path in mapping."); }
     }
 }

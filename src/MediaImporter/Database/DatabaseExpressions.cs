@@ -8,7 +8,11 @@ namespace MediaImporter.Database;
 public sealed partial class PostgresDatabaseWriter
 {
     private sealed record UnknownValue(string Reference);
-    private sealed class SkipValue { public static readonly SkipValue Instance = new(); }
+    private sealed class SkipValue
+    {
+        public static readonly SkipValue Instance = new();
+        public static readonly SkipValue Unavailable = new();
+    }
     private sealed record Evaluation(AdapterItem Item, IReadOnlyList<AssetResult> Assets, string MediaId,
         DateTime UpdatedUtc, Dictionary<string, object?> Returned, DatabaseExecutionContext Execution,
         string? UrlTemplate, DatabaseSchema Schema, AssetResult? Asset = null, object? Row = null,
@@ -25,11 +29,14 @@ public sealed partial class PostgresDatabaseWriter
         if (value.Coalesce.Length > 0)
         {
             result = null;
+            var unavailable = false;
             foreach (var candidate in value.Coalesce)
             {
                 result = await EvaluateAsync(candidate, context, connection, transaction, ct);
+                unavailable |= ReferenceEquals(result, SkipValue.Unavailable);
                 if (result is not null && result is not SkipValue) break;
             }
+            if (unavailable && result is null or SkipValue) return SkipValue.Unavailable;
         }
         else if (value.Merge.Length > 0)
         {
@@ -38,6 +45,7 @@ public sealed partial class PostgresDatabaseWriter
             {
                 var part = await EvaluateAsync(candidate, context, connection, transaction, ct);
                 if (part is UnknownValue) return part;
+                if (ReferenceEquals(part, SkipValue.Unavailable)) return part;
                 if (part is null or SkipValue) continue;
                 var element = ToJson(part);
                 if (element.ValueKind != JsonValueKind.Object) throw new InvalidDataException("Merge operands must be JSON objects.");
@@ -51,6 +59,8 @@ public sealed partial class PostgresDatabaseWriter
             var right = condition.Right is null ? null : await EvaluateAsync(condition.Right, context, connection, transaction, ct);
             if (left is UnknownValue) return left;
             if (right is UnknownValue) return right;
+            if (left is SkipValue) return left;
+            if (right is SkipValue) return right;
             var matches = condition.Operator switch
             {
                 "isNull" => left is null, "notNull" => left is not null,
@@ -70,7 +80,7 @@ public sealed partial class PostgresDatabaseWriter
             foreach (Match token in Regex.Matches(template, "\\{([^{}]+)\\}"))
             {
                 var replacement = Source(token.Groups[1].Value, context);
-                if (replacement is UnknownValue) return replacement;
+                if (replacement is UnknownValue or SkipValue) return replacement;
                 result = ((string)result).Replace(token.Value, replacement is null ? "" : StringValue(replacement), StringComparison.Ordinal);
             }
         }
@@ -85,7 +95,7 @@ public sealed partial class PostgresDatabaseWriter
                 var projected = value.SelectValue is not null ? await EvaluateAsync(value.SelectValue, row, connection, transaction, ct)
                     : value.Select is null ? (object)JsonSerializer.SerializeToElement(asset, Json)
                     : await ObjectAsync(value.Select, row, connection, transaction, ct);
-                if (projected is UnknownValue) return projected;
+                if (projected is UnknownValue || ReferenceEquals(projected, SkipValue.Unavailable)) return projected;
                 values.Add(projected);
                 if (value.First) break;
             }
@@ -131,6 +141,7 @@ public sealed partial class PostgresDatabaseWriter
         {
             var result = await EvaluateAsync(expression, context, connection, transaction, ct);
             if (result is UnknownValue) return result;
+            if (ReferenceEquals(result, SkipValue.Unavailable)) return result;
             if (result is not SkipValue) values[key] = result;
         }
         return JsonSerializer.SerializeToElement(values, Json);
@@ -146,6 +157,7 @@ public sealed partial class PostgresDatabaseWriter
         {
             var result = await EvaluateAsync(expression, context, connection, transaction, ct);
             if (result is UnknownValue) return result;
+            if (ReferenceEquals(result, SkipValue.Unavailable)) return result;
             if (result is SkipValue) throw new InvalidDataException("Lookup predicates cannot be role-gated.");
             clauses.Add(Quote(column) + " IS NOT DISTINCT FROM " + Parameter(command, table.Columns.Single(c => c.Name == column), result));
         }
@@ -162,7 +174,8 @@ public sealed partial class PostgresDatabaseWriter
     private static object? Source(string source, Evaluation context) => source switch
     {
         "mediaId" => context.MediaId, "updatedUtc" => context.UpdatedUtc,
-        "item" => JsonSerializer.SerializeToElement(context.Item, Json),
+        "item" => context.Item.FieldStatus.Values.Contains("retry", StringComparer.Ordinal)
+            ? SkipValue.Unavailable : JsonSerializer.SerializeToElement(context.Item, Json),
         "adapterVersion" => context.Execution.AdapterVersion,
         "assetStatus" => JsonSerializer.SerializeToElement(context.Execution.AssetStatus ?? context.Item.AssetStatus, Json),
         "warnings" => JsonSerializer.SerializeToElement(context.Execution.Warnings
@@ -174,11 +187,19 @@ public sealed partial class PostgresDatabaseWriter
             : context.UrlTemplate is null ? context.Asset.RelativePath : context.UrlTemplate.Replace("{hash}", context.Asset.Hash)
                 .Replace("{relativePath}", context.Asset.RelativePath ?? ""),
         _ when source.StartsWith("result.", StringComparison.Ordinal) => context.Returned.GetValueOrDefault(source[7..]),
-        _ when source.StartsWith("item.", StringComparison.Ordinal) => JsonPath(JsonSerializer.SerializeToElement(context.Item, Json), source[5..]),
+        _ when source.StartsWith("item.", StringComparison.Ordinal) => ItemSource(source[5..], context.Item),
         _ when source.StartsWith("asset.", StringComparison.Ordinal) && context.Asset is not null
             => JsonPath(JsonSerializer.SerializeToElement(context.Asset, Json), source[6..]),
         _ => null
     };
+
+    private static object? ItemSource(string path, AdapterItem item)
+    {
+        var field = path.Split('.')[0];
+        if (!ImportFieldMerge.Available(item, field)
+            || field == "metadata" && item.FieldStatus.Values.Contains("retry", StringComparer.Ordinal)) return SkipValue.Unavailable;
+        return JsonPath(JsonSerializer.SerializeToElement(item, Json), path);
+    }
 
     private static object? JsonPath(JsonElement element, string path)
     {

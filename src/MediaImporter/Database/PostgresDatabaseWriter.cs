@@ -83,7 +83,7 @@ public sealed partial class PostgresDatabaseWriter(IConfiguration configuration)
                 var values = await ValuesAsync(mapping.Columns, row, connection, transaction, ct);
                 EnsureMatch(mapping, values);
                 var existing = await SnapshotAsync(table, mapping, values, connection, transaction, ct, true);
-                EnsureValues(table, mapping, values, existing.Exists);
+                EnsureValues(table, mapping, values, existing.Exists, row.Item.FieldStatus.Values.Contains("retry", StringComparer.Ordinal));
                 object? returned = existing.Returned;
                 var assignments = values.Where(pair => !mapping.MatchColumns.Contains(pair.Key)
                     && mapping.Columns[pair.Key].OnUpdate != "preserve").ToDictionary(pair => pair.Key, pair => pair.Value, StringComparer.Ordinal);
@@ -162,6 +162,7 @@ public sealed partial class PostgresDatabaseWriter(IConfiguration configuration)
                 var match = mapping.MatchColumns.Where(values.ContainsKey).ToDictionary(name => name, name => values[name]);
                 if (values.Values.Any(value => value is UnknownValue))
                 {
+                    ValidateKnownValues(table, values);
                     changes.Add(new("unresolved", Public(match), values.Keys.ToArray(), "Values depend on a key generated only during writing."));
                     if (mapping.Returning is not null) context.Returned[mapping.Name] = new UnknownValue("result." + mapping.Name);
                     continue;
@@ -170,7 +171,7 @@ public sealed partial class PostgresDatabaseWriter(IConfiguration configuration)
                 var key = RowKey(table, mapping, values);
                 var existing = !replaced && virtualRows.TryGetValue(key, out var pending) ? pending
                     : replaced ? new Snapshot(false, [], null) : await SnapshotAsync(table, mapping, values, connection, transaction, ct, false);
-                EnsureValues(table, mapping, values, existing.Exists);
+                EnsureValues(table, mapping, values, existing.Exists, row.Item.FieldStatus.Values.Contains("retry", StringComparer.Ordinal));
                 var changed = values.Where(pair => !mapping.MatchColumns.Contains(pair.Key)
                     && mapping.Columns[pair.Key].OnUpdate != "preserve"
                     && (!existing.Exists || !ColumnEqual(table.Columns.Single(c => c.Name == pair.Key), existing.Values.GetValueOrDefault(pair.Key), pair.Value)))
@@ -242,22 +243,39 @@ public sealed partial class PostgresDatabaseWriter(IConfiguration configuration)
     {
         if (values.Count == 0 || values.Values.Any(value => value is null or UnknownValue)) throw new InvalidDataException("Collection predicates require known non-null values.");
     }
-    private static void EnsureValues(DatabaseTableSchema table, DatabaseTableMapping mapping, Dictionary<string, object?> values, bool existing)
+    private static void EnsureValues(DatabaseTableSchema table, DatabaseTableMapping mapping, Dictionary<string, object?> values, bool existing,
+        bool sourceIncomplete = false)
     {
         foreach (var column in table.Columns)
         {
             if (existing && mapping.Columns.TryGetValue(column.Name, out var definition) && definition.OnUpdate == "preserve") continue;
             if (values.TryGetValue(column.Name, out var value) && value is null && !column.Nullable)
                 throw new InvalidDataException("Null value for required column: " + table.Name + "." + column.Name);
+            if (values.TryGetValue(column.Name, out value) && value is not UnknownValue)
+            {
+                using var check = new NpgsqlCommand();
+                Parameter(check, column, value);
+            }
             if (!existing && mapping.Operation != "update" && !column.Nullable && column.Default is null && !column.Identity && !column.Generated
                 && !values.ContainsKey(column.Name))
+            {
+                if (sourceIncomplete) throw new AdapterReadException("destination_requires_unavailable_field", true);
                 throw new InvalidDataException("Required insert value is unavailable: " + table.Name + "." + column.Name);
+            }
         }
+    }
+    private static void ValidateKnownValues(DatabaseTableSchema table, Dictionary<string, object?> values)
+    {
+        using var check = new NpgsqlCommand();
+        foreach (var (name, value) in values)
+            if (value is not UnknownValue) Parameter(check, table.Columns.Single(column => column.Name == name), value);
     }
     private static string Predicate(NpgsqlCommand command, DatabaseTableSchema table, Dictionary<string, object?> values) =>
         string.Join(" AND ", values.Select(pair => Quote(pair.Key) + " IS NOT DISTINCT FROM " + Parameter(command, table.Columns.Single(c => c.Name == pair.Key), pair.Value)));
     private static string? SkipReason(DatabaseTableMapping mapping, Evaluation context)
     {
+        if (mapping.Scope is "tags" or "genres" && !ImportFieldMerge.Available(context.Item, mapping.Scope))
+            return "The source field was omitted or needs retry: " + mapping.Scope;
         if (mapping.Role is { } role && !Complete(context, role)) return "Role was omitted or needs retry: " + role;
         if (mapping.PreserveOnStates.Length > 0 && context.Assets.Any(asset => (mapping.Role is null || asset.Role == mapping.Role)
             && mapping.PreserveOnStates.Contains(asset.State))) return "Existing role preserved after an unavailable source asset.";

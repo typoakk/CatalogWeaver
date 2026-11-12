@@ -41,6 +41,7 @@ services:
       Importer__MediaRoot: /data/media
       Importer__AdaptersPath: /app/adapters
       Importer__EncodersPath: /app/encoders
+      Importer__WorkersEnabled: ${IMPORTER_WORKERS_ENABLED:-true}
       Importer__MinimumFreeBytes: ${IMPORTER_MINIMUM_FREE_BYTES:-5368709120}
       Importer__Secrets__SteamApiKey: ${STEAM_API_KEY:-}
     volumes:
@@ -65,6 +66,9 @@ services:
       migrate:
         condition: service_completed_successfully
     init: true
+    mem_limit: ${IMPORTER_MEMORY_LIMIT:-1536m}
+    cpus: ${IMPORTER_CPU_LIMIT:-2.0}
+    pids_limit: 256
     restart: unless-stopped
     stop_grace_period: 30s
 volumes:

@@ -35,6 +35,7 @@ public sealed record AdapterItem
     public string SourceUrl { get; init; } = "";
     public AdapterAsset[] Assets { get; init; } = [];
     public Dictionary<string, string> AssetStatus { get; init; } = new(StringComparer.Ordinal);
+    public Dictionary<string, string> FieldStatus { get; init; } = new(StringComparer.Ordinal);
     public JsonElement? Metadata { get; init; }
     public string Country { get; init; } = "";
     public string Language { get; init; } = "";

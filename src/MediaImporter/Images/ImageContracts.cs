@@ -8,6 +8,11 @@ public sealed class ImageStorageOptions
     public int MaximumImageBytes { get; set; } = 8 * 1024 * 1024;
     public int MaximumEncodedBytes { get; set; } = 32 * 1024 * 1024;
     public int StagingRetentionHours { get; set; } = 24;
+    public int ImageWorkerCount { get; set; } = 2;
+    public int ImageProcessTimeoutSeconds { get; set; } = 120;
+    public int ImageMemoryMiB { get; set; } = 256;
+    public int ImageDiskMiB { get; set; } = 512;
+    public int ImageThreads { get; set; } = 2;
 }
 
 public sealed record ImageDescription(string ContentType, uint Width, uint Height,

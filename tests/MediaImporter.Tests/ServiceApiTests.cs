@@ -125,6 +125,7 @@ public sealed class ServiceApiTests
     {
         await using var fixture = await Fixture.CreateAsync();
         var original = fixture.Registry.Get("source");
+        fixture.Client.DefaultRequestHeaders.IfMatch.ParseAdd('"' + original.Version + '"');
         var enabled = await fixture.Client.PostAsJsonAsync("/api/v1/importer/adapters/source/enabled", new { enabled = true });
         enabled.EnsureSuccessStatusCode();
         Assert.True(fixture.Registry.Get("source").Definition.Enabled);
@@ -154,6 +155,7 @@ public sealed class ServiceApiTests
         await fixture.EnablePosterAsync();
         var adapter = JsonNode.Parse(fixture.Registry.Get("source").Json)!;
         adapter["assetPolicies"]!["poster"]!["imageProfile"] = "custom-webp";
+        fixture.Client.DefaultRequestHeaders.IfMatch.ParseAdd('"' + fixture.Registry.Get("source").Version + '"');
         (await fixture.Client.PutAsJsonAsync("/api/v1/importer/adapters/source", adapter)).EnsureSuccessStatusCode();
         var response = await fixture.Client.PostAsJsonAsync("/api/v1/importer/adapters/source/preview", new { externalId = 41, processImages = true });
         response.EnsureSuccessStatusCode();
@@ -178,6 +180,84 @@ public sealed class ServiceApiTests
         adapter["assetPolicies"]!["poster"]!["imageProfile"] = "missing-profile";
         Assert.Equal(HttpStatusCode.BadRequest, (await fixture.Client.PutAsJsonAsync("/api/v1/importer/adapters/source", adapter)).StatusCode);
         Assert.Equal("original", fixture.Registry.Get("source").Definition.AssetPolicies["poster"].ImageProfile);
+    }
+
+    [Fact]
+    public async Task Configuration_updates_require_the_observed_etag_and_reject_stale_clients()
+    {
+        await using var fixture = await Fixture.CreateAsync();
+        var response = await fixture.Client.GetAsync("/api/v1/importer/adapters/source");
+        var tag = response.Headers.ETag;
+        Assert.NotNull(tag);
+        var config = JsonNode.Parse(await response.Content.ReadAsStringAsync())!;
+        config["displayName"] = "Edited";
+        Assert.Equal((HttpStatusCode)428, (await fixture.Client.PutAsJsonAsync("/api/v1/importer/adapters/source", config)).StatusCode);
+        fixture.Client.DefaultRequestHeaders.IfMatch.Add(tag);
+        (await fixture.Client.PutAsJsonAsync("/api/v1/importer/adapters/source", config)).EnsureSuccessStatusCode();
+        Assert.Equal(HttpStatusCode.PreconditionFailed,
+            (await fixture.Client.PostAsJsonAsync("/api/v1/importer/adapters/source/enabled", new { enabled = true })).StatusCode);
+        Assert.Equal("Edited", fixture.Registry.Get("source").Definition.DisplayName);
+        Assert.False(fixture.Registry.Get("source").Definition.Enabled);
+    }
+
+    [Fact]
+    public async Task Openapi_lists_actual_routes_authentication_and_typed_request_contracts()
+    {
+        await using var fixture = await Fixture.CreateAsync();
+        using var document = JsonDocument.Parse(await fixture.Client.GetStringAsync("/api/v1/importer/openapi.json"));
+        var root = document.RootElement;
+        Assert.Equal("3.1.0", root.GetProperty("openapi").GetString());
+        var preview = root.GetProperty("paths").GetProperty("/api/v1/importer/adapters/{provider}/preview").GetProperty("post");
+        Assert.True(preview.TryGetProperty("requestBody", out _));
+        Assert.True(preview.TryGetProperty("security", out _));
+        Assert.True(root.GetProperty("components").GetProperty("schemas").TryGetProperty("PreviewRequest", out _));
+        var schema = await fixture.Client.GetAsync("/api/v1/importer/schemas/adapter.schema.json");
+        schema.EnsureSuccessStatusCode();
+        Assert.Equal("application/schema+json", schema.Content.Headers.ContentType!.MediaType);
+    }
+
+    [Fact]
+    public async Task Shipped_template_remains_available_after_working_configuration_is_changed()
+    {
+        await using var fixture = await Fixture.CreateAsync();
+        var response = await fixture.Client.GetAsync("/api/v1/importer/encoders/avif");
+        var module = JsonNode.Parse(await response.Content.ReadAsStringAsync())!;
+        var shippedName = module["displayName"]!.GetValue<string>();
+        fixture.Client.DefaultRequestHeaders.IfMatch.Add(response.Headers.ETag!);
+        module["displayName"] = "Customized AVIF";
+        (await fixture.Client.PutAsJsonAsync("/api/v1/importer/encoders/avif", module)).EnsureSuccessStatusCode();
+        using var comparison = JsonDocument.Parse(await fixture.Client.GetStringAsync("/api/v1/importer/templates/encoders/avif"));
+        Assert.Equal(shippedName, comparison.RootElement.GetProperty("shipped").GetProperty("displayName").GetString());
+        Assert.Contains(comparison.RootElement.GetProperty("changedPaths").EnumerateArray(), value => value.GetString() == "$.displayName");
+        Assert.Equal("Customized AVIF", JsonNode.Parse(await fixture.Client.GetStringAsync("/api/v1/importer/encoders/avif"))!["displayName"]!.GetValue<string>());
+    }
+
+    [Fact]
+    public async Task Asset_failure_retains_the_safe_source_error_code_instead_of_just_exception_type()
+    {
+        await using var fixture = await Fixture.CreateAsync();
+        await fixture.EnablePosterAsync();
+        fixture.Handler.FailImages = true;
+        var response = await fixture.Client.PostAsJsonAsync("/api/v1/importer/adapters/source/preview", new { externalId = 41, processImages = true });
+        var result = (await response.Content.ReadFromJsonAsync<ImportResult>())!;
+        Assert.Equal("partial", result.Status);
+        Assert.Equal("http_503", Assert.Single(result.Assets).Error);
+        Assert.Contains("asset_retry:poster:http_503", result.Warnings);
+    }
+
+    [Fact]
+    public async Task A_permanently_rejected_asset_host_fails_the_attempt_without_automatic_asset_retry()
+    {
+        await using var fixture = await Fixture.CreateAsync();
+        await fixture.EnablePosterAsync();
+        var definition = fixture.Registry.Get("source").Definition;
+        definition.Mapping.Assets["poster"] = definition.Mapping.Assets["poster"] with { UrlTemplates = ["https://rejected.invalid/valid.png"] };
+        await fixture.Registry.SaveAsync("source", JsonSerializer.Serialize(definition, AdapterRegistry.Json), default);
+        var response = await fixture.Client.PostAsJsonAsync("/api/v1/importer/adapters/source/preview", new { externalId = 41, processImages = true });
+        var result = (await response.Content.ReadFromJsonAsync<ImportResult>())!;
+        Assert.Equal("failed", result.Status);
+        Assert.Equal("url_host_rejected", result.Error);
+        Assert.Equal(0, fixture.Handler.ImageRequests);
     }
 
     private sealed class Fixture : IAsyncDisposable
@@ -282,10 +362,13 @@ public sealed class ServiceApiTests
     private sealed class ResponseHandler : HttpMessageHandler
     {
         public bool Fail { get; set; }
+        public bool FailImages { get; set; }
         public int ImageRequests { get; private set; }
         protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
         {
             if (Fail) return Task.FromResult(new HttpResponseMessage(HttpStatusCode.ServiceUnavailable));
+            if (FailImages && request.RequestUri!.AbsolutePath.EndsWith(".png", StringComparison.Ordinal))
+                return Task.FromResult(new HttpResponseMessage(HttpStatusCode.ServiceUnavailable));
             if (request.RequestUri!.AbsolutePath.EndsWith(".png", StringComparison.Ordinal))
             {
                 ImageRequests++;

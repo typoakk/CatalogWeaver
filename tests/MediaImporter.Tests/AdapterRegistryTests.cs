@@ -71,6 +71,12 @@ public sealed class AdapterRegistryTests
             Assert.Equal("Shikimori", pinned.Definition.DisplayName);
             Assert.Equal("Edited Shikimori", registry.Get("shikimori").Definition.DisplayName);
             Assert.Empty(Assert.Single(registry.List()).Errors);
+            var invalidFields = JsonNode.Parse(original)!;
+            invalidFields["mapping"]!["fields"]!["titel"] = invalidFields["mapping"]!["fields"]!["title"]!.DeepClone();
+            await File.WriteAllTextAsync(configPath, invalidFields.ToJsonString());
+            await registry.ReloadAsync();
+            Assert.Contains(Assert.Single(registry.List()).Errors, value => value.Contains("$.mapping.fields.titel", StringComparison.Ordinal));
+            Assert.Equal("Edited Shikimori", registry.Get("shikimori").Definition.DisplayName);
         }
         finally { if (Directory.Exists(directory)) Directory.Delete(directory, true); }
     }

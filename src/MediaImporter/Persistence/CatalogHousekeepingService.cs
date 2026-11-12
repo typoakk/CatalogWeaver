@@ -11,8 +11,11 @@ public sealed class CatalogHousekeepingService(IServiceScopeFactory scopes,
             try
             {
                 using var scope = scopes.CreateScope();
-                var removed = await scope.ServiceProvider.GetRequiredService<IImportPersistence>()
-                    .SweepOrphansAsync(stoppingToken);
+                var persistence = scope.ServiceProvider.GetRequiredService<IImportPersistence>();
+                var removed = await persistence.SweepOrphansAsync(stoppingToken);
+                if (persistence is StandalonePersistence { LastSweep: { } sweep })
+                    logger.LogInformation("Catalog cleanup checked {Candidates} candidates in {Batches} batches, removed {Removed} files in {ElapsedMilliseconds} ms.",
+                        sweep.Candidates, sweep.Batches, sweep.Removed, sweep.ElapsedMilliseconds);
                 if (removed > 0) logger.LogInformation("Reclaimed {Count} unreferenced importer files.", removed);
             }
             catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested) { break; }

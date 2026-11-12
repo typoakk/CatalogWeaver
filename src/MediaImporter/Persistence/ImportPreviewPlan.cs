@@ -4,6 +4,7 @@ namespace MediaImporter;
 
 public sealed record ImportPreviewPlan
 {
+    public AdapterItem? Item { get; init; }
     public string MediaId { get; init; } = "";
     public string StateOperation { get; init; } = "insert";
     public Dictionary<string, string> AssetStatus { get; init; } = new(StringComparer.Ordinal);

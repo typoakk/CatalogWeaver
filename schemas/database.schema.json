@@ -1,0 +1,425 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "CatalogWeaver database destination",
+  "description": "CatalogWeaver configVersion 1. JSON Schema validates structure; the service validates semantic references, installed profiles and database compatibility.",
+  "type": "object",
+  "properties": {
+    "connection": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 63,
+      "description": "Simple SQL identifier; runtime also checks identifier syntax and existing database schema."
+    },
+    "localUrlTemplate": {
+      "anyOf": [
+        {
+          "type": "string",
+          "maxLength": 2048
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "mediaId": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/value"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "tables": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/table"
+      },
+      "minItems": 1,
+      "maxItems": 64
+    }
+  },
+  "additionalProperties": false,
+  "required": [
+    "connection",
+    "tables"
+  ],
+  "$defs": {
+    "value": {
+      "type": "object",
+      "properties": {
+        "source": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "constant": {},
+        "default": {},
+        "onNull": {
+          "enum": [
+            "write",
+            "preserve",
+            "default"
+          ]
+        },
+        "onUpdate": {
+          "enum": [
+            "write",
+            "preserve"
+          ]
+        },
+        "whenRole": {
+          "anyOf": [
+            {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 63,
+              "description": "Simple SQL identifier; runtime also checks identifier syntax and existing database schema."
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "coalesce": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/value"
+          }
+        },
+        "merge": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/value"
+          }
+        },
+        "lookup": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/lookup"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "map": {
+          "anyOf": [
+            {
+              "type": "object",
+              "additionalProperties": {}
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "mapMissing": {
+          "enum": [
+            "original",
+            "null"
+          ]
+        },
+        "template": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "join": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "limit": {
+          "anyOf": [
+            {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 1000000
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "role": {
+          "anyOf": [
+            {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 63,
+              "description": "Simple SQL identifier; runtime also checks identifier syntax and existing database schema."
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "first": {
+          "type": "boolean"
+        },
+        "select": {
+          "anyOf": [
+            {
+              "type": "object",
+              "additionalProperties": {
+                "$ref": "#/$defs/value"
+              }
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "selectValue": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/value"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "object": {
+          "anyOf": [
+            {
+              "type": "object",
+              "additionalProperties": {
+                "$ref": "#/$defs/value"
+              }
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "condition": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/condition"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "then": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/value"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "else": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/value"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "additionalProperties": false,
+      "description": "At most one primary expression: source, constant, lookup, template, object, condition, nonempty coalesce or nonempty merge. Runtime validates dependencies and evaluation scope."
+    },
+    "lookup": {
+      "type": "object",
+      "properties": {
+        "schema": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 63,
+          "description": "Simple SQL identifier; runtime also checks identifier syntax and existing database schema."
+        },
+        "table": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 63,
+          "description": "Simple SQL identifier; runtime also checks identifier syntax and existing database schema."
+        },
+        "column": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 63,
+          "description": "Simple SQL identifier; runtime also checks identifier syntax and existing database schema."
+        },
+        "where": {
+          "type": "object",
+          "additionalProperties": {
+            "$ref": "#/$defs/value"
+          },
+          "minProperties": 1,
+          "maxProperties": 32
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "table",
+        "column",
+        "where"
+      ]
+    },
+    "condition": {
+      "type": "object",
+      "properties": {
+        "left": {
+          "$ref": "#/$defs/value"
+        },
+        "operator": {
+          "enum": [
+            "eq",
+            "ne",
+            "isNull",
+            "notNull"
+          ]
+        },
+        "right": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/value"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "left"
+      ]
+    },
+    "table": {
+      "type": "object",
+      "properties": {
+        "name": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 63,
+          "description": "Simple SQL identifier; runtime also checks identifier syntax and existing database schema."
+        },
+        "schema": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 63,
+          "description": "Simple SQL identifier; runtime also checks identifier syntax and existing database schema."
+        },
+        "table": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 63,
+          "description": "Simple SQL identifier; runtime also checks identifier syntax and existing database schema."
+        },
+        "scope": {
+          "enum": [
+            "item",
+            "assets",
+            "role",
+            "files",
+            "tags",
+            "genres"
+          ]
+        },
+        "operation": {
+          "enum": [
+            "upsert",
+            "update"
+          ]
+        },
+        "role": {
+          "anyOf": [
+            {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 63,
+              "description": "Simple SQL identifier; runtime also checks identifier syntax and existing database schema."
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "states": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "preserveOnStates": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "matchColumns": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 63,
+            "description": "Simple SQL identifier; runtime also checks identifier syntax and existing database schema."
+          },
+          "minItems": 1,
+          "maxItems": 32,
+          "uniqueItems": true
+        },
+        "columns": {
+          "type": "object",
+          "additionalProperties": {
+            "$ref": "#/$defs/value"
+          },
+          "minProperties": 1,
+          "maxProperties": 128
+        },
+        "returning": {
+          "anyOf": [
+            {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 63,
+              "description": "Simple SQL identifier; runtime also checks identifier syntax and existing database schema."
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "replaceScope": {
+          "type": "object",
+          "additionalProperties": {
+            "$ref": "#/$defs/value"
+          }
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "name",
+        "table",
+        "matchColumns",
+        "columns"
+      ]
+    }
+  }
+}
