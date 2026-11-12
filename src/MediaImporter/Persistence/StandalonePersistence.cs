@@ -47,7 +47,7 @@ public sealed partial class StandalonePersistence(NpgsqlDataSource source, IConf
         var current = new List<AssetResult>();
         var created = true;
         await using (var existing = new NpgsqlCommand("""
-            SELECT "MediaId", "AssetStatusJson"::text FROM "ImporterItems" WHERE "Provider"=@provider AND "ExternalId"=@external
+            SELECT "MediaId", "AssetStatusJson"::text, "MetadataJson"::text FROM "ImporterItems" WHERE "Provider"=@provider AND "ExternalId"=@external
             """, connection, transaction))
         {
             Identity(existing, imported.Provider, imported.ExternalId);
@@ -56,6 +56,7 @@ public sealed partial class StandalonePersistence(NpgsqlDataSource source, IConf
             {
                 mediaId = reader.GetString(0);
                 effectiveStatus = JsonSerializer.Deserialize<Dictionary<string, string>>(reader.GetString(1), Json) ?? [];
+                imported = ImportFieldMerge.Merge(imported, JsonSerializer.Deserialize<AdapterItem>(reader.GetString(2), Json));
                 created = false;
             }
         }
@@ -149,11 +150,12 @@ public sealed partial class StandalonePersistence(NpgsqlDataSource source, IConf
             save.Parameters.AddWithValue("bytes", asset.Bytes); save.Parameters.AddWithValue("now", clock.GetUtcNow());
             await save.ExecuteNonQueryAsync(ct);
         }
+        await ClearPublicationsAsync(connection, transaction, references, job, ct);
         await transaction.CommitAsync(ct);
         var retainedFiles = references.ToHashSet();
         return new PersistenceResult(mediaId, created,
             oldFiles.Concat(References(results)).Where(file => !retainedFiles.Contains(file)).Distinct().ToArray())
-        { Assets = effective, AssetStatus = effectiveStatus };
+        { Item = normalized, Assets = effective, AssetStatus = effectiveStatus };
     }
 
     public async Task CleanupAsync(PersistenceResult result, CancellationToken ct)
@@ -176,7 +178,7 @@ public sealed partial class StandalonePersistence(NpgsqlDataSource source, IConf
         var oldStatus = new Dictionary<string, string>(StringComparer.Ordinal);
         var previous = new List<AssetResult>();
         await using (var command = new NpgsqlCommand("""
-            SELECT "MediaId","AssetStatusJson"::text FROM "ImporterItems" WHERE "Provider"=@provider AND "ExternalId"=@external
+            SELECT "MediaId","AssetStatusJson"::text,"MetadataJson"::text FROM "ImporterItems" WHERE "Provider"=@provider AND "ExternalId"=@external
             """, connection, transaction))
         {
             Identity(command, imported.Provider, imported.ExternalId);
@@ -185,6 +187,7 @@ public sealed partial class StandalonePersistence(NpgsqlDataSource source, IConf
             {
                 mediaId = reader.GetString(0);
                 oldStatus = JsonSerializer.Deserialize<Dictionary<string, string>>(reader.GetString(1), Json) ?? [];
+                imported = ImportFieldMerge.Merge(imported, JsonSerializer.Deserialize<AdapterItem>(reader.GetString(2), Json));
                 created = false;
             }
         }
@@ -252,7 +255,7 @@ public sealed partial class StandalonePersistence(NpgsqlDataSource source, IConf
         await transaction.CommitAsync(ct);
         return new ImportPreviewPlan
         {
-            MediaId = mediaId, StateOperation = created ? "insert" : "update", AssetStatus = merge.Status,
+            Item = imported, MediaId = mediaId, StateOperation = created ? "insert" : "update", AssetStatus = merge.Status,
             Assets = merge.Assets, Database = databasePlan, Files = changes.ToArray(), DeferredRoles = merge.DeferredRoles,
             Warnings = warnings.Concat(databasePlan?.Warnings ?? []).Distinct().ToArray()
         };
@@ -260,38 +263,16 @@ public sealed partial class StandalonePersistence(NpgsqlDataSource source, IConf
 
     public Task<int> SweepOrphansAsync(CancellationToken ct) => SweepOrphansAsync(TimeSpan.FromHours(24), ct);
 
-    public async Task<int> SweepOrphansAsync(TimeSpan minimumAge, CancellationToken ct)
-    {
-        if (minimumAge < TimeSpan.Zero) throw new ArgumentOutOfRangeException(nameof(minimumAge));
-        if (!Directory.Exists(MediaRoot)) return 0;
-        var removed = 0;
-        var cutoff = clock.GetUtcNow().UtcDateTime - minimumAge;
-        var options = new EnumerationOptions { RecurseSubdirectories = true, AttributesToSkip = FileAttributes.ReparsePoint, IgnoreInaccessible = true };
-        foreach (var path in Directory.EnumerateFiles(MediaRoot, "*", options))
-        {
-            ct.ThrowIfCancellationRequested();
-            var hash = Path.GetFileName(path);
-            if (!IsHash(hash) || File.GetLastWriteTimeUtc(path) > cutoff) continue;
-            var relative = Path.GetRelativePath(MediaRoot, path).Replace(Path.DirectorySeparatorChar, '/');
-            if (relative.StartsWith(".staging/", StringComparison.Ordinal)) continue;
-            if (!configuration.GetValue<bool>("Importer:CleanupUnregisteredFiles"))
-            {
-                await using var known = source.CreateCommand("SELECT EXISTS (SELECT 1 FROM \"ImporterFiles\" WHERE \"Hash\"=@hash AND \"RelativePath\"=@path)");
-                FileIdentity(known, new(hash, relative));
-                if (!(bool)(await known.ExecuteScalarAsync(ct))!) continue;
-            }
-            if (await DeleteUnreferencedAsync(new(hash, relative), cutoff, ct)) removed++;
-        }
-        return removed;
-    }
-
     public async Task<ImportResult?> ReadAsync(string mediaId, CancellationToken ct)
     {
         await using var connection = await source.OpenConnectionAsync(ct);
+        await using var transaction = await connection.BeginTransactionAsync(System.Data.IsolationLevel.RepeatableRead, ct);
+        await using (var readOnly = new NpgsqlCommand("SET TRANSACTION READ ONLY", connection, transaction))
+            await readOnly.ExecuteNonQueryAsync(ct);
         AdapterItem item; string version; string[] warnings; DateTime updated;
         await using (var command = new NpgsqlCommand("""
             SELECT "MetadataJson"::text,"AdapterVersion","WarningsJson"::text,"UpdatedUtc" FROM "ImporterItems" WHERE "MediaId"=@media
-            """, connection))
+            """, connection, transaction))
         {
             command.Parameters.AddWithValue("media", mediaId);
             await using var reader = await command.ExecuteReaderAsync(ct);
@@ -303,15 +284,17 @@ public sealed partial class StandalonePersistence(NpgsqlDataSource source, IConf
         var assets = new List<AssetResult>();
         await using (var command = new NpgsqlCommand("""
             SELECT "AssetJson"::text FROM "ImporterAssets" WHERE "Provider"=@provider AND "ExternalId"=@external ORDER BY "Role","Position"
-            """, connection))
+            """, connection, transaction))
         {
             Identity(command, item.Provider, item.ExternalId);
             await using var reader = await command.ExecuteReaderAsync(ct);
             while (await reader.ReadAsync(ct)) assets.Add(JsonSerializer.Deserialize<AssetResult>(reader.GetString(0), Json)!);
         }
+        await transaction.CommitAsync(ct);
         return new ImportResult { Mode = "stored", MediaId = mediaId, Provider = item.Provider,
             ExternalId = item.ExternalId, AdapterVersion = version, Item = item, Assets = assets.ToArray(),
-            Status = item.AssetStatus.Values.Any(value => value == "retry") ? "partial" : "completed",
+            Status = item.AssetStatus.Values.Any(value => value == "retry") || item.FieldStatus.Values.Any(value => value == "retry")
+                || warnings.Any(value => value.StartsWith("supplement:", StringComparison.Ordinal)) ? "partial" : "completed",
             Warnings = warnings, UpdatedUtc = updated };
     }
 
@@ -320,7 +303,7 @@ public sealed partial class StandalonePersistence(NpgsqlDataSource source, IConf
         var values = new List<StoredImportSummary>();
         await using var command = source.CreateCommand("""
             SELECT "Provider","ExternalId","MediaId","MetadataJson"->>'title',"AdapterVersion","UpdatedUtc"
-            FROM "ImporterItems" ORDER BY "UpdatedUtc" DESC LIMIT @limit
+            FROM "ImporterItems" ORDER BY "UpdatedUtc" DESC,"MediaId" COLLATE "C" LIMIT @limit
             """);
         command.Parameters.AddWithValue("limit", Math.Clamp(limit, 1, 100));
         await using var reader = await command.ExecuteReaderAsync(ct);
@@ -337,7 +320,7 @@ public sealed partial class StandalonePersistence(NpgsqlDataSource source, IConf
         {
             await using var reserve = new NpgsqlCommand("""
                 INSERT INTO "ImporterExportedFiles" ("Hash","RelativePath") VALUES (@hash,@path)
-                ON CONFLICT ("Hash","RelativePath") DO NOTHING
+                ON CONFLICT ("Hash","RelativePath") DO UPDATE SET "Revision"=gen_random_uuid(),"ReservedUtc"=now()
                 """, connection, transaction);
             FileIdentity(reserve, file);
             await reserve.ExecuteNonQueryAsync(ct);
@@ -347,23 +330,7 @@ public sealed partial class StandalonePersistence(NpgsqlDataSource source, IConf
 
     private async Task<bool> DeleteUnreferencedAsync(CatalogFileReference file, DateTime? cutoff, CancellationToken ct)
     {
-        var path = ResolvePath(file);
-        await using var connection = await source.OpenConnectionAsync(ct);
-        await using var transaction = await connection.BeginTransactionAsync(ct);
-        await LockAsync(connection, transaction, FileLock(file), ct);
-        await using var references = new NpgsqlCommand("""
-            SELECT EXISTS (SELECT 1 FROM "ImporterAssets" WHERE "Hash"=@hash AND "RelativePath"=@path)
-                OR EXISTS (SELECT 1 FROM "ImporterExportedFiles" WHERE "Hash"=@hash AND "RelativePath"=@path)
-            """, connection, transaction);
-        FileIdentity(references, file);
-        if ((bool)(await references.ExecuteScalarAsync(ct))!) return false;
-        var exists = File.Exists(path);
-        if (exists && cutoff is { } latest && File.GetLastWriteTimeUtc(path) > latest) return false;
-        await images.DeletePublishedAsync(file.RelativePath, ct);
-        await using var remove = new NpgsqlCommand("DELETE FROM \"ImporterFiles\" WHERE \"Hash\"=@hash AND \"RelativePath\"=@path", connection, transaction);
-        FileIdentity(remove, file); await remove.ExecuteNonQueryAsync(ct);
-        await transaction.CommitAsync(ct);
-        return exists;
+        return await DeleteBatchAsync([file], cutoff, false, ct) != 0;
     }
 
     private string ResolvePath(CatalogFileReference file)
@@ -389,7 +356,7 @@ public sealed partial class StandalonePersistence(NpgsqlDataSource source, IConf
     private static IEnumerable<CatalogFileReference> References(IEnumerable<AssetResult> assets) =>
         assets.Where(asset => asset.Hash is not null && asset.RelativePath is not null)
             .Select(asset => new CatalogFileReference(asset.Hash!, asset.RelativePath!));
-    private static bool IsHash(string hash) => hash.Length == 64 && hash.All(character => character is >= '0' and <= '9' or >= 'a' and <= 'f');
+    private static bool IsHash(string? hash) => hash is { Length: 64 } && hash.All(character => character is >= '0' and <= '9' or >= 'a' and <= 'f');
     private static string FileLock(CatalogFileReference file) => "standalone-file:" + file.Hash + ":" + file.RelativePath;
     private static async Task LockAsync(NpgsqlConnection connection, NpgsqlTransaction transaction, string identity, CancellationToken ct)
     {
@@ -416,6 +383,8 @@ public sealed partial class StandalonePersistence(NpgsqlDataSource source, IConf
             throw new InvalidDataException("Invalid normalized item.");
         if (item.AssetStatus.Any(pair => !RoleName().IsMatch(pair.Key) || pair.Value is not ("complete" or "retry")))
             throw new InvalidDataException("Invalid asset status.");
+        if (item.FieldStatus.Any(pair => pair.Value is not ("complete" or "retry")))
+            throw new InvalidDataException("Invalid field status.");
         foreach (var asset in assets)
         {
             if (!RoleName().IsMatch(asset.Role) || asset.Position < 0 || asset.Storage is not ("local" or "link")

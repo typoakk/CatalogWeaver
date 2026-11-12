@@ -1,34 +1,36 @@
 using System.Globalization;
+using System.Text;
 using System.Text.Json;
 
 namespace MediaImporter;
 
-/// <summary>A bounded JSONPath subset for member access, indexes and collection wildcards.</summary>
+/// <summary>A bounded JSONPath subset. Quoted property names never become indexes or wildcards.</summary>
 public static class AdapterJsonPath
 {
+    private enum TokenKind { Property, Index, Wildcard }
+    private readonly record struct Token(TokenKind Kind, string? Name = null, int Index = 0);
+
     public static IReadOnlyList<JsonElement> Select(JsonElement root, string path)
     {
-        var tokens = Parse(path);
         List<JsonElement> current = [root];
-        foreach (var token in tokens)
+        foreach (var token in Parse(path))
         {
             var next = new List<JsonElement>();
             foreach (var node in current)
             {
-                if (token == "*")
+                if (token.Kind == TokenKind.Wildcard)
                 {
                     if (node.ValueKind == JsonValueKind.Array) next.AddRange(node.EnumerateArray());
                     else if (node.ValueKind == JsonValueKind.Object) next.AddRange(node.EnumerateObject().Select(x => x.Value));
                 }
-                else if (token.StartsWith('#'))
+                else if (token.Kind == TokenKind.Index)
                 {
-                    var index = int.Parse(token.AsSpan(1), CultureInfo.InvariantCulture);
-                    if (node.ValueKind == JsonValueKind.Array && index < node.GetArrayLength()) next.Add(node[index]);
+                    if (node.ValueKind == JsonValueKind.Array && token.Index < node.GetArrayLength()) next.Add(node[token.Index]);
                 }
-                else if (node.ValueKind == JsonValueKind.Object && node.TryGetProperty(token, out var value))
+                else if (node.ValueKind == JsonValueKind.Object && node.TryGetProperty(token.Name!, out var value))
                     next.Add(value);
+                if (next.Count > 100_000) throw new InvalidDataException("JSON mapping produced too many values.");
             }
-            if (next.Count > 100_000) throw new InvalidDataException("JSON mapping produced too many values.");
             current = next;
         }
         return current;
@@ -43,11 +45,11 @@ public static class AdapterJsonPath
         _ => ""
     };
 
-    private static string[] Parse(string path)
+    private static Token[] Parse(string path)
     {
         if (string.IsNullOrEmpty(path) || path[0] != '$' || path.Length > 2048)
-            throw new InvalidDataException("A JSON path must start with $.");
-        var result = new List<string>();
+            throw new InvalidDataException("A JSON path must start with $ and contain at most 2048 characters.");
+        var result = new List<Token>();
         for (var index = 1; index < path.Length;)
         {
             if (path[index] == '.')
@@ -55,24 +57,48 @@ public static class AdapterJsonPath
                 var start = ++index;
                 while (index < path.Length && path[index] != '.' && path[index] != '[') index++;
                 if (start == index) throw new InvalidDataException("Empty JSON path member.");
-                result.Add(path[start..index]);
+                var member = path[start..index];
+                result.Add(member == "*" ? new(TokenKind.Wildcard) : new(TokenKind.Property, member));
             }
             else if (path[index] == '[')
             {
-                var close = path.IndexOf(']', index + 1);
-                if (close < 0) throw new InvalidDataException("Unclosed JSON path index.");
-                var member = path[(index + 1)..close];
-                if (member == "*") result.Add(member);
-                else if (member.Length >= 2 && member[0] is '\'' or '"' && member[^1] == member[0])
-                    result.Add(member[1..^1]);
-                else if (int.TryParse(member, NumberStyles.None, CultureInfo.InvariantCulture, out var numeric) && numeric >= 0)
-                    result.Add("#" + member);
-                else throw new InvalidDataException("Unsupported JSON path index.");
-                index = close + 1;
+                index++;
+                if (index >= path.Length) throw new InvalidDataException("Unclosed JSON path index.");
+                if (path[index] is '\'' or '"')
+                {
+                    var quote = path[index++];
+                    var name = new StringBuilder();
+                    var closed = false;
+                    while (index < path.Length)
+                    {
+                        var value = path[index++];
+                        if (value == quote) { closed = true; break; }
+                        if (value == '\\')
+                        {
+                            if (index >= path.Length) throw new InvalidDataException("Unclosed JSON path escape.");
+                            var escaped = path[index++];
+                            if (escaped != quote && escaped != '\\') throw new InvalidDataException("Unsupported JSON path escape.");
+                            value = escaped;
+                        }
+                        name.Append(value);
+                    }
+                    if (!closed || index >= path.Length || path[index++] != ']') throw new InvalidDataException("Unclosed quoted JSON path member.");
+                    result.Add(new(TokenKind.Property, name.ToString()));
+                }
+                else
+                {
+                    var close = path.IndexOf(']', index);
+                    if (close < 0) throw new InvalidDataException("Unclosed JSON path index.");
+                    var member = path[index..close];
+                    if (member == "*") result.Add(new(TokenKind.Wildcard));
+                    else if (int.TryParse(member, NumberStyles.None, CultureInfo.InvariantCulture, out var numeric)) result.Add(new(TokenKind.Index, Index: numeric));
+                    else throw new InvalidDataException("Unsupported JSON path index.");
+                    index = close + 1;
+                }
             }
             else throw new InvalidDataException("Unsupported JSON path syntax.");
+            if (result.Count > 48) throw new InvalidDataException("JSON path is too deep.");
         }
-        if (result.Count > 48) throw new InvalidDataException("JSON path is too deep.");
         return result.ToArray();
     }
 }

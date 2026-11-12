@@ -263,6 +263,64 @@ public sealed class QueueTests : IAsyncLifetime
         MediaId = job.Provider + "-" + job.ExternalId, Status = "completed"
     };
 
+    [PostgresFact]
+    public async Task Cancelling_completed_card_preserves_result_and_stops_automatic_and_discovery_refresh()
+    {
+        await using var fixture = new Fixture();
+        var snapshot = fixture.Snapshot();
+        await fixture.Store.EnqueueAsync(snapshot, [new(1001, LastModified: 1)], false, default);
+        var job = Assert.IsType<ImportJob>(await fixture.ClaimJobAsync());
+        await fixture.Store.FinishJobAsync(job, Completed(job), false, default);
+        var result = (await fixture.Store.GetJobAsync(job.Id, default))!.ResultJson;
+        Assert.True(await fixture.Store.CancelJobAsync(job.Id, default));
+        await fixture.SqlAsync("UPDATE \"ImporterJobs\" SET \"DueUtc\"=now()-interval '1 hour' WHERE \"Provider\"=@provider");
+        var paused = (await fixture.Store.GetJobAsync(job.Id, default))!;
+        Assert.False(paused.RefreshEnabled);
+        Assert.Equal("completed", paused.State);
+        Assert.Equal(result, paused.ResultJson);
+        Assert.Null(await fixture.ClaimJobAsync());
+        Assert.Equal(0, await fixture.Store.EnqueueAsync(snapshot, [new(1001, LastModified: 2)], false, default));
+        Assert.True(await fixture.Store.SetRefreshEnabledAsync(job.Id, true, default));
+        Assert.NotNull(await fixture.ClaimJobAsync());
+    }
+
+    [PostgresFact]
+    public async Task Permanent_discovery_error_is_terminal_without_spending_all_attempts()
+    {
+        await using var fixture = new Fixture();
+        await fixture.Store.StartDiscoveryAsync(fixture.Snapshot(), null, true, default);
+        var run = Assert.IsType<DiscoveryRun>(await fixture.ClaimDiscoveryAsync());
+        await fixture.Store.FailDiscoveryAsync(run, new AdapterReadException("missing_template_variable", false), default);
+        var failed = await fixture.RunAsync();
+        Assert.Equal("failed", failed.State);
+        Assert.Equal(1, failed.Attempts);
+        Assert.Equal("missing_template_variable", failed.Error);
+        Assert.Null(await fixture.ClaimDiscoveryAsync());
+    }
+
+    [PostgresFact]
+    public async Task Pagination_enumerates_more_than_100_jobs_with_timestamp_ties_and_mutating_updated_times()
+    {
+        await using var fixture = new Fixture();
+        await fixture.Store.EnqueueAsync(fixture.Snapshot(), Enumerable.Range(1, 125).Select(value => new DiscoveryEntry(value)).ToArray(), false, default);
+        await fixture.SqlAsync("UPDATE \"ImporterJobs\" SET \"CreatedUtc\"='2026-01-01T00:00:00Z' WHERE \"Provider\"=@provider");
+        string? cursor = null;
+        var seen = new List<Guid>();
+        do
+        {
+            var page = await fixture.Store.ListJobsPageAsync(fixture.Provider, null, 30, cursor, default);
+            Assert.InRange(page.Items.Length, 1, 30);
+            seen.AddRange(page.Items.Select(value => value.Id));
+            cursor = page.NextCursor;
+            await fixture.SqlAsync("UPDATE \"ImporterJobs\" SET \"UpdatedUtc\"=now() WHERE \"Provider\"=@provider");
+        } while (cursor is not null);
+        Assert.Equal(125, seen.Count);
+        Assert.Equal(125, seen.Distinct().Count());
+        var first = await fixture.Store.ListJobsPageAsync(fixture.Provider, "pending", 1, null, default);
+        await Assert.ThrowsAsync<ArgumentException>(() => fixture.Store.ListJobsPageAsync(fixture.Provider, null, 1, first.NextCursor, default));
+        await Assert.ThrowsAsync<ArgumentException>(() => fixture.Store.ListJobsPageAsync(fixture.Provider, null, 1, "broken-cursor", default));
+    }
+
     private sealed class Fixture : IAsyncDisposable
     {
         public string Provider { get; } = "q" + Guid.NewGuid().ToString("N")[..15];

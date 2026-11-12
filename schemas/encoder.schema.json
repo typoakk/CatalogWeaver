@@ -1,0 +1,148 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "CatalogWeaver encoder module",
+  "description": "CatalogWeaver configVersion 1. JSON Schema validates structure; the service validates semantic references, installed profiles and database compatibility.",
+  "type": "object",
+  "properties": {
+    "configVersion": {
+      "const": 1
+    },
+    "id": {
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9-]{0,23}$"
+    },
+    "displayName": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 120
+    },
+    "driver": {
+      "const": "magick"
+    },
+    "format": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Exact MagickFormat enum name; runtime checks read/write image support."
+    },
+    "rejectAlpha": {
+      "type": "boolean"
+    },
+    "defines": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "string",
+        "maxLength": 512
+      },
+      "maxProperties": 32,
+      "propertyNames": {
+        "pattern": "^[a-z0-9-]+:[a-z0-9-]+$"
+      }
+    },
+    "profiles": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/profile"
+      },
+      "maxItems": 100
+    },
+    "qualityRange": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/qualityRange"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    }
+  },
+  "additionalProperties": false,
+  "required": [
+    "id",
+    "displayName",
+    "format"
+  ],
+  "anyOf": [
+    {
+      "required": [
+        "qualityRange"
+      ],
+      "properties": {
+        "qualityRange": {
+          "$ref": "#/$defs/qualityRange"
+        }
+      }
+    },
+    {
+      "required": [
+        "profiles"
+      ],
+      "properties": {
+        "profiles": {
+          "minItems": 1
+        }
+      }
+    }
+  ],
+  "$defs": {
+    "profile": {
+      "type": "object",
+      "properties": {
+        "name": {
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9-]{0,63}$"
+        },
+        "quality": {
+          "anyOf": [
+            {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 100
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "defines": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "string",
+            "maxLength": 512
+          },
+          "maxProperties": 32,
+          "propertyNames": {
+            "pattern": "^[a-z0-9-]+:[a-z0-9-]+$"
+          }
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "name"
+      ]
+    },
+    "qualityRange": {
+      "type": "object",
+      "properties": {
+        "prefix": {
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9-]{0,59}$"
+        },
+        "minimum": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 100
+        },
+        "maximum": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 100
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "prefix"
+      ]
+    }
+  }
+}

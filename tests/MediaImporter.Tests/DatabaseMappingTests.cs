@@ -252,6 +252,66 @@ public sealed class DatabaseMappingTests
         await churn;
     }
 
+    [MappingPostgresFact]
+    public async Task Read_only_insert_plan_validates_numbers_UUIDs_and_lengths_using_the_writer_conversions()
+    {
+        await using var fixture = await Fixture.CreateAsync();
+        await fixture.ExecuteAsync("CREATE TABLE " + fixture.Table("typed") + " (id text PRIMARY KEY,amount integer,token uuid,label varchar(3))");
+        var valid = new Dictionary<string, DatabaseValue>
+        {
+            ["id"] = new() { Constant = JsonSerializer.SerializeToElement("one") },
+            ["amount"] = new() { Constant = JsonSerializer.SerializeToElement("42") },
+            ["token"] = new() { Constant = JsonSerializer.SerializeToElement(Guid.NewGuid().ToString()) },
+            ["label"] = new() { Constant = JsonSerializer.SerializeToElement("abc") }
+        };
+        foreach (var (column, value) in new[] { ("amount", "not-a-number"), ("amount", "999999999999999999999"),
+            ("token", "not-a-uuid"), ("label", "too-long") })
+        {
+            var columns = new Dictionary<string, DatabaseValue>(valid) { [column] = new() { Constant = JsonSerializer.SerializeToElement(value) } };
+            var destination = new DatabaseDestination { Connection = "Target", Tables = [new()
+            { Name = "typed", Schema = fixture.Schema, Table = "typed", MatchColumns = ["id"], Columns = columns }] };
+            var planned = await Assert.ThrowsAsync<InvalidDataException>(() => fixture.Writer.PlanAsync(destination, Item(), [], "one", default));
+            var written = await Assert.ThrowsAsync<InvalidDataException>(() => fixture.Writer.WriteAsync(destination, Item(), [], "one", default));
+            Assert.Equal(planned.Message, written.Message);
+            Assert.Contains(column, planned.Message);
+            Assert.DoesNotContain(value, planned.Message);
+        }
+        Assert.Equal("0", await fixture.ScalarAsync("SELECT count(*) FROM " + fixture.Table("typed")));
+    }
+
+    [MappingPostgresFact]
+    public async Task Unresolved_generated_parent_key_does_not_hide_an_invalid_known_child_value()
+    {
+        await using var fixture = await Fixture.CreateAsync();
+        var mapping = fixture.Mapping;
+        var columns = new Dictionary<string, DatabaseValue>(mapping.Tables[1].Columns)
+        { ["position"] = new() { Constant = JsonSerializer.SerializeToElement("invalid-position") } };
+        mapping = mapping with { Tables = [mapping.Tables[0], mapping.Tables[1] with { Columns = columns }] };
+        await Assert.ThrowsAsync<InvalidDataException>(() => fixture.Writer.PlanAsync(mapping, Item(), [Screenshot(0)], "source-41", default));
+        Assert.Equal("0", await fixture.ScalarAsync("SELECT count(*) FROM " + fixture.Table("media")));
+        Assert.Equal("0", await fixture.ScalarAsync("SELECT count(*) FROM " + fixture.Table("materials")));
+    }
+
+    [MappingPostgresFact]
+    public async Task Failed_fields_preserve_the_actual_target_values_and_collections_without_relying_on_service_history()
+    {
+        await using var fixture = await Fixture.CreateAsync();
+        await fixture.Writer.WriteAsync(fixture.Mapping, Item(), [], "source-41", default);
+        await fixture.ExecuteAsync("UPDATE " + fixture.Table("media") + " SET body='Externally edited body'");
+        var failed = Item("New title") with { Description = "", Tags = [],
+            FieldStatus = new() { ["title"] = "complete", ["description"] = "retry", ["tags"] = "retry" } };
+        var plan = await fixture.Writer.PlanAsync(fixture.Mapping, failed, [], "source-41", default);
+        Assert.Contains(plan.Tables, table => table.Name == "tags" && table.SkippedReason is not null);
+        await fixture.Writer.WriteAsync(fixture.Mapping, failed, [], "source-41", default);
+        Assert.Equal("Externally edited body", await fixture.ScalarAsync("SELECT body FROM " + fixture.Table("media")));
+        Assert.Equal("New title", await fixture.ScalarAsync("SELECT title FROM " + fixture.Table("media")));
+        Assert.Equal("2", await fixture.ScalarAsync("SELECT count(*) FROM " + fixture.Table("tags")));
+        await fixture.Writer.WriteAsync(fixture.Mapping, failed with
+            { FieldStatus = new() { ["title"] = "complete", ["description"] = "complete", ["tags"] = "complete" } }, [], "source-41", default);
+        Assert.Equal("", await fixture.ScalarAsync("SELECT body FROM " + fixture.Table("media")));
+        Assert.Equal("0", await fixture.ScalarAsync("SELECT count(*) FROM " + fixture.Table("tags")));
+    }
+
     private static AdapterItem Item(string title = "Example") => new()
     {
         Provider = "source", ExternalId = 41, Kind = "game", Title = title, Description = "Body", Tags = ["one", "two"],

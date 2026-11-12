@@ -176,6 +176,31 @@ public sealed class AdapterRuntimeTests
         Assert.Equal("complete", item.AssetStatus["poster"]);
     }
 
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task Optional_description_failure_is_distinct_from_a_successfully_empty_description(bool unavailable)
+    {
+        using var fixture = new RuntimeFixture("shikimori", request => request.RequestUri!.AbsolutePath == "/description"
+            ? unavailable ? new HttpResponseMessage(HttpStatusCode.ServiceUnavailable) : Json("{\"description\":\"\"}")
+            : Json("{\"id\":52991,\"name\":\"Example\"}"));
+        var definition = fixture.Snapshot.Definition;
+        var requests = new Dictionary<string, RequestDefinition>(definition.Requests)
+        { ["description"] = new() { Path = "/description", ResponseKind = "object" } };
+        var fields = new Dictionary<string, FieldMapping>
+        {
+            ["title"] = new() { Request = "item", Path = "$.name" },
+            ["description"] = new() { Request = "description", Path = "$.description" }
+        };
+        var snapshot = fixture.Snapshot with { Definition = definition with
+        { Requests = requests, Mapping = new() { Fields = fields }, AssetPolicies = [] } };
+        var item = await fixture.Runtime.ReadItemAsync(snapshot, 52991, default);
+        Assert.Equal("", item.Description);
+        Assert.Equal(unavailable ? "retry" : "complete", item.FieldStatus["description"]);
+        Assert.Equal("complete", item.FieldStatus["title"]);
+        Assert.Equal(unavailable, item.Warnings.Any(value => value.StartsWith("request:description:", StringComparison.Ordinal)));
+    }
+
     internal static HttpResponseMessage Json(string json) => new(HttpStatusCode.OK) { Content = new StringContent(json, Encoding.UTF8, "application/json") };
 
     internal sealed class RuntimeFixture : IDisposable

@@ -16,7 +16,7 @@ public sealed class StandalonePostgresFactAttribute : FactAttribute
     }
 }
 
-public sealed class StandalonePersistenceTests
+public sealed partial class StandalonePersistenceTests
 {
     [StandalonePostgresFact]
     public async Task Blank_database_schema_initializes_only_service_owned_tables()
@@ -265,7 +265,7 @@ public sealed class StandalonePersistenceTests
         private ImagePipeline pipeline = null!;
         private string adminConnection = "";
 
-        public static async Task<Fixture> CreateAsync(bool? cleanupUnregisteredFiles = true)
+        public static async Task<Fixture> CreateAsync(bool? cleanupUnregisteredFiles = true, int cleanupBatchSize = 256)
         {
             var fixture = new Fixture();
             fixture.adminConnection = Environment.GetEnvironmentVariable("MEDIA_IMPORTER_TEST_CONNECTION")!;
@@ -283,7 +283,8 @@ public sealed class StandalonePersistenceTests
             await StandaloneSchema.InitializeAsync(fixture.Source, default);
             await new ImportJobStore(fixture.Source, new ImporterOptions()).InitializeAsync(PostgresProviderRateLimiter.SchemaSql, default);
             var values = new Dictionary<string, string?>
-            { ["Importer:MediaRoot"] = fixture.MediaRoot, ["ConnectionStrings:target"] = builder.ConnectionString };
+            { ["Importer:MediaRoot"] = fixture.MediaRoot, ["ConnectionStrings:target"] = builder.ConnectionString,
+                ["Importer:CleanupBatchSize"] = cleanupBatchSize.ToString() };
             if (cleanupUnregisteredFiles.HasValue)
                 values["Importer:CleanupUnregisteredFiles"] = cleanupUnregisteredFiles.Value.ToString();
             var settings = new ConfigurationBuilder().AddInMemoryCollection(values).Build();
@@ -305,6 +306,17 @@ public sealed class StandalonePersistenceTests
             var prepared = await pipeline.PrepareAsync(Path.Combine(MediaRoot, Provider), "original",
                 _ => Task.FromResult(Encoding.UTF8.GetBytes(contents)), default);
             var published = await pipeline.PublishAsync(prepared, default);
+            await pipeline.CompleteAsync(prepared, default);
+            return new AssetResult { Role = "poster", Position = 0, SourceUrl = "https://example.org/poster.jpg", Storage = "local",
+                State = "stored", Hash = published.Hash, RelativePath = published.RelativePath,
+                ContentType = published.ContentType, Bytes = published.Bytes, RequestedProfile = "original", ActualProfile = "original" };
+        }
+
+        public async Task<AssetResult> ManagedFileAsync(string contents, ImportJob? job = null)
+        {
+            var prepared = await pipeline.PrepareAsync(Path.Combine(MediaRoot, Provider), "original",
+                _ => Task.FromResult(Encoding.UTF8.GetBytes(contents)), default);
+            var published = await Persistence.PublishAsync(prepared, job, default);
             await pipeline.CompleteAsync(prepared, default);
             return new AssetResult { Role = "poster", Position = 0, SourceUrl = "https://example.org/poster.jpg", Storage = "local",
                 State = "stored", Hash = published.Hash, RelativePath = published.RelativePath,

@@ -1,4 +1,5 @@
 using System.Data;
+using System.Text;
 using System.Text.Json;
 using Npgsql;
 using NpgsqlTypes;
@@ -10,7 +11,7 @@ public sealed class ImportJobStore(NpgsqlDataSource dataSource, ImporterOptions 
     private const string JobColumns = """
         "Id", "Provider", "ExternalId", "AdapterVersion", "AdapterJson"::text,
         "State", "Stage", "Attempts", "DueUtc", "LeaseUntilUtc", "LeaseToken",
-        "ResultJson"::text, "CreatedUtc", "UpdatedUtc", "FirstCompletedUtc"
+        "ResultJson"::text, "CreatedUtc", "UpdatedUtc", "FirstCompletedUtc", "RefreshEnabled"
         """;
     private const string DiscoveryColumns = """
         "Id", "Provider", "AdapterVersion", "AdapterJson"::text, "Cursor", "MaximumItems",
@@ -26,9 +27,11 @@ public sealed class ImportJobStore(NpgsqlDataSource dataSource, ImporterOptions 
             "LeaseUntilUtc" timestamptz, "LeaseToken" uuid, "ResultJson" jsonb,
             "SourceModified" bigint, "CreatedUtc" timestamptz NOT NULL DEFAULT now(),
             "UpdatedUtc" timestamptz NOT NULL DEFAULT now(), "FirstCompletedUtc" timestamptz,
+            "RefreshEnabled" boolean NOT NULL DEFAULT true,
             UNIQUE ("Provider", "ExternalId"), CHECK ("ExternalId" BETWEEN 1 AND 2147483647)
         );
         CREATE INDEX IF NOT EXISTS "IX_ImporterJobs_Due" ON "ImporterJobs" ("State", "DueUtc");
+        CREATE INDEX IF NOT EXISTS "IX_ImporterJobs_Created" ON "ImporterJobs" ("CreatedUtc" DESC, "Id" DESC);
         CREATE TABLE IF NOT EXISTS "ImporterDiscoveryRuns" (
             "Id" uuid PRIMARY KEY, "Provider" varchar(24) NOT NULL UNIQUE,
             "AdapterVersion" varchar(64) NOT NULL, "AdapterJson" text NOT NULL,
@@ -41,26 +44,35 @@ public sealed class ImportJobStore(NpgsqlDataSource dataSource, ImporterOptions 
         );
         ALTER TABLE "ImporterDiscoveryRuns" ADD COLUMN IF NOT EXISTS "PendingItems" jsonb NOT NULL DEFAULT '[]'::jsonb;
         ALTER TABLE "ImporterDiscoveryRuns" ADD COLUMN IF NOT EXISTS "PendingCursor" text;
+        ALTER TABLE "ImporterJobs" ADD COLUMN IF NOT EXISTS "RefreshEnabled" boolean NOT NULL DEFAULT true;
         """;
 
     public async Task InitializeAsync(string rateSchemaSql, CancellationToken ct)
     {
         await using var connection = await dataSource.OpenConnectionAsync(ct);
         await using var transaction = await connection.BeginTransactionAsync(ct);
-        await using var command = new NpgsqlCommand(
-            "SELECT pg_advisory_xact_lock(741857209);" + SchemaSql + rateSchemaSql, connection, transaction);
-        await command.ExecuteNonQueryAsync(ct);
+        await using (var prepare = new NpgsqlCommand("SELECT pg_advisory_xact_lock(741857209);" + QueueSchema.VersionsSql, connection, transaction))
+            await prepare.ExecuteNonQueryAsync(ct);
+        var current = await QueueSchema.ReadVersionAsync(connection, transaction, ct);
+        if (current is not null && current != QueueSchema.Version)
+            throw new InvalidOperationException("Unsupported queue database schema version; use a compatible release or restore its backup.");
+        await using (var command = new NpgsqlCommand(SchemaSql + rateSchemaSql, connection, transaction))
+            await command.ExecuteNonQueryAsync(ct);
+        if (!await QueueSchema.HasColumnsAsync(connection, transaction, ct))
+            throw new InvalidOperationException("Queue database columns are incompatible; restore or repair the service schema before starting workers.");
+        await using (var version = new NpgsqlCommand("INSERT INTO \"ImporterSchemaVersions\" (\"Component\",\"Version\") VALUES ('queue',@version) ON CONFLICT (\"Component\") DO NOTHING", connection, transaction))
+        {
+            version.Parameters.AddWithValue("version", QueueSchema.Version);
+            await version.ExecuteNonQueryAsync(ct);
+        }
         await transaction.CommitAsync(ct);
     }
 
     public async Task<bool> IsReadyAsync(CancellationToken ct)
     {
-        await using var command = dataSource.CreateCommand("""
-            SELECT to_regclass('"ImporterJobs"') IS NOT NULL
-                AND to_regclass('"ImporterDiscoveryRuns"') IS NOT NULL
-                AND to_regclass('"ImporterRateStates"') IS NOT NULL
-            """);
-        return (bool)(await command.ExecuteScalarAsync(ct))!;
+        await using var connection = await dataSource.OpenConnectionAsync(ct);
+        return await QueueSchema.HasColumnsAsync(connection, null, ct)
+            && await QueueSchema.ReadVersionAsync(connection, null, ct) == QueueSchema.Version;
     }
 
     public async Task<int> EnqueueAsync(AdapterSnapshot adapter, IReadOnlyList<DiscoveryEntry> entries,
@@ -82,10 +94,11 @@ public sealed class ImportJobStore(NpgsqlDataSource dataSource, ImporterOptions 
                     ON CONFLICT ("Provider", "ExternalId") DO UPDATE SET
                         "AdapterVersion" = EXCLUDED."AdapterVersion", "AdapterJson" = EXCLUDED."AdapterJson",
                         "State" = 'pending', "Stage" = 'queued', "Attempts" = 0, "DueUtc" = now(),
+                        "RefreshEnabled" = CASE WHEN @refresh THEN true ELSE "ImporterJobs"."RefreshEnabled" END,
                         "LeaseUntilUtc" = NULL, "LeaseToken" = NULL, "UpdatedUtc" = now(),
                         "SourceModified" = COALESCE(EXCLUDED."SourceModified", "ImporterJobs"."SourceModified")
                     WHERE ("ImporterJobs"."LeaseUntilUtc" IS NULL OR "ImporterJobs"."LeaseUntilUtc" < now())
-                      AND (@refresh OR EXCLUDED."SourceModified" > COALESCE("ImporterJobs"."SourceModified", 0))
+                      AND (@refresh OR ("ImporterJobs"."RefreshEnabled" AND EXCLUDED."SourceModified" > COALESCE("ImporterJobs"."SourceModified", 0)))
                     """, connection, transaction);
                 command.Parameters.AddWithValue("id", Guid.NewGuid());
                 AddSnapshot(command, adapter);
@@ -106,6 +119,7 @@ public sealed class ImportJobStore(NpgsqlDataSource dataSource, ImporterOptions 
             WITH next AS (
                 SELECT "Id" FROM "ImporterJobs"
                 WHERE "Provider" = ANY(@providers) AND "State" IN ('pending','retry','partial','importing','completed')
+                    AND ("State" <> 'completed' OR "RefreshEnabled")
                     AND "Attempts" < @maximum AND "DueUtc" <= now()
                     AND ("LeaseUntilUtc" IS NULL OR "LeaseUntilUtc" < now())
                 ORDER BY ("FirstCompletedUtc" IS NOT NULL), "DueUtc", "CreatedUtc"
@@ -206,14 +220,74 @@ public sealed class ImportJobStore(NpgsqlDataSource dataSource, ImporterOptions 
         return await reader.ReadAsync(ct) ? ReadJob(reader) : null;
     }
 
+    public async Task<JobPage> ListJobsPageAsync(string? provider, string? state, int limit, string? cursor, CancellationToken ct)
+    {
+        var size = Math.Clamp(limit, 1, 100);
+        var before = ParseCursor(cursor, provider, state);
+        await using var command = dataSource.CreateCommand($"""
+            SELECT {JobColumns} FROM "ImporterJobs"
+            WHERE (@provider IS NULL OR "Provider"=@provider) AND (@state IS NULL OR "State"=@state)
+                AND (NOT @hasCursor OR ("CreatedUtc","Id") < (@before,@id))
+            ORDER BY "CreatedUtc" DESC,"Id" DESC LIMIT @limit
+            """);
+        command.Parameters.AddWithValue("provider", NpgsqlDbType.Text, (object?)provider ?? DBNull.Value);
+        command.Parameters.AddWithValue("state", NpgsqlDbType.Text, (object?)state ?? DBNull.Value);
+        command.Parameters.AddWithValue("hasCursor", before is not null);
+        command.Parameters.AddWithValue("before", before?.CreatedUtc ?? DateTime.UnixEpoch);
+        command.Parameters.AddWithValue("id", before?.Id ?? Guid.Empty);
+        command.Parameters.AddWithValue("limit", size + 1);
+        var items = new List<ImportJob>();
+        await using (var reader = await command.ExecuteReaderAsync(ct))
+            while (await reader.ReadAsync(ct)) items.Add(ReadJob(reader));
+        var more = items.Count > size;
+        if (more) items.RemoveAt(size);
+        var last = items.LastOrDefault();
+        return new(items.ToArray(), more && last is not null ? EncodeCursor(new(last.CreatedUtc, last.Id, provider, state)) : null);
+    }
+
+    private sealed record JobCursor(DateTime CreatedUtc, Guid Id, string? Provider, string? State);
+
+    private static string EncodeCursor(JobCursor value) => Convert.ToBase64String(Encoding.UTF8.GetBytes(JsonSerializer.Serialize(value, Json)))
+        .TrimEnd('=').Replace('+', '-').Replace('/', '_');
+
+    private static JobCursor? ParseCursor(string? value, string? provider, string? state)
+    {
+        if (value is null) return null;
+        try
+        {
+            if (value.Length is < 1 or > 2048) throw new FormatException();
+            var encoded = value.Replace('-', '+').Replace('_', '/');
+            encoded = encoded.PadRight((encoded.Length + 3) / 4 * 4, '=');
+            var result = JsonSerializer.Deserialize<JobCursor>(Convert.FromBase64String(encoded), Json);
+            if (result is null || result.Id == Guid.Empty || result.CreatedUtc.Kind != DateTimeKind.Utc
+                || result.Provider != provider || result.State != state) throw new FormatException();
+            return result;
+        }
+        catch (Exception error) when (error is FormatException or JsonException or ArgumentException)
+        { throw new ArgumentException("Invalid jobs cursor or filters differ from the first page.", nameof(value)); }
+    }
+
     public async Task<bool> CancelJobAsync(Guid id, CancellationToken ct)
     {
         await using var command = dataSource.CreateCommand("""
-            UPDATE "ImporterJobs" SET "State"='cancelled', "Stage"='cancelled',
+            UPDATE "ImporterJobs" SET "State"=CASE WHEN "State"='completed' THEN 'completed' ELSE 'cancelled' END,
+                "Stage"=CASE WHEN "State"='completed' THEN "Stage" ELSE 'cancelled' END, "RefreshEnabled"=false,
                 "LeaseUntilUtc"=NULL,"LeaseToken"=NULL,"UpdatedUtc"=now()
-            WHERE "Id"=@id AND "State" IN ('pending','retry','partial','importing')
+            WHERE "Id"=@id AND "State" IN ('pending','retry','partial','importing','completed','cancelled')
             """);
         command.Parameters.AddWithValue("id", id);
+        return await command.ExecuteNonQueryAsync(ct) == 1;
+    }
+
+    public async Task<bool> SetRefreshEnabledAsync(Guid id, bool enabled, CancellationToken ct)
+    {
+        await using var command = dataSource.CreateCommand("""
+            UPDATE "ImporterJobs" SET "RefreshEnabled"=@enabled,
+                "DueUtc"=CASE WHEN @enabled AND "State"='completed' THEN LEAST("DueUtc",now()) ELSE "DueUtc" END,
+                "UpdatedUtc"=now() WHERE "Id"=@id
+            """);
+        command.Parameters.AddWithValue("id", id);
+        command.Parameters.AddWithValue("enabled", enabled);
         return await command.ExecuteNonQueryAsync(ct) == 1;
     }
 
@@ -347,14 +421,15 @@ public sealed class ImportJobStore(NpgsqlDataSource dataSource, ImporterOptions 
     public async Task FailDiscoveryAsync(DiscoveryRun run, Exception error, CancellationToken ct)
     {
         var attempts = run.Attempts + 1;
+        var failure = ImportErrors.Classify(error);
         await using var command = dataSource.CreateCommand("""
             UPDATE "ImporterDiscoveryRuns" SET "State"=@state,"Attempts"=@attempts,"Error"=@error,
                 "DueUtc"=@due,"LeaseToken"=NULL,"LeaseUntilUtc"=NULL,"UpdatedUtc"=now()
             WHERE "Id"=@id AND "LeaseToken"=@token
             """);
-        command.Parameters.AddWithValue("state", attempts >= options.MaximumAttempts ? "failed" : "retry");
+        command.Parameters.AddWithValue("state", !failure.Retryable || attempts >= options.MaximumAttempts ? "failed" : "retry");
         command.Parameters.AddWithValue("attempts", attempts);
-        command.Parameters.AddWithValue("error", error.GetType().Name);
+        command.Parameters.AddWithValue("error", failure.Code);
         command.Parameters.AddWithValue("due", RetryAt(attempts));
         command.Parameters.AddWithValue("id", run.Id);
         command.Parameters.AddWithValue("token", run.LeaseToken!.Value);
@@ -389,7 +464,7 @@ public sealed class ImportJobStore(NpgsqlDataSource dataSource, ImporterOptions 
     private static ImportJob ReadJob(NpgsqlDataReader r) => new(r.GetGuid(0), r.GetString(1), r.GetInt64(2),
         r.GetString(3), r.GetString(4), r.GetString(5), r.GetString(6), r.GetInt32(7), r.GetDateTime(8),
         Nullable<DateTime>(r, 9), Nullable<Guid>(r, 10), r.IsDBNull(11) ? null : r.GetString(11),
-        r.GetDateTime(12), r.GetDateTime(13), Nullable<DateTime>(r, 14));
+        r.GetDateTime(12), r.GetDateTime(13), Nullable<DateTime>(r, 14)) { RefreshEnabled = r.GetBoolean(15) };
 
     private static DiscoveryRun ReadDiscovery(NpgsqlDataReader r) => new(r.GetGuid(0), r.GetString(1), r.GetString(2),
         r.GetString(3), r.IsDBNull(4) ? null : r.GetString(4), Nullable<int>(r, 5), r.GetInt32(6),

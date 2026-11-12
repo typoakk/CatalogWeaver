@@ -80,13 +80,20 @@ public sealed class AdapterRuntime(AdapterTransport transport)
         variables["externalId"] = externalId.ToString(CultureInfo.InvariantCulture);
         var responses = new Dictionary<string, JsonElement>(StringComparer.Ordinal);
         var failed = new HashSet<string>(StringComparer.Ordinal);
+        var uncertain = new HashSet<string>(StringComparer.Ordinal);
         var warnings = new List<string>();
         var needed = definition.Mapping.Fields.Values.Select(x => x.Request)
             .Concat(definition.Mapping.Assets.Where(x => definition.AssetPolicies.ContainsKey(x.Key))
                 .SelectMany(x => Sources(x.Value).Select(source => source.Request))).Distinct().ToHashSet(StringComparer.Ordinal);
         foreach (var (name, request) in definition.Requests.Where(x => needed.Contains(x.Key)))
         {
-            try { responses[name] = await ReadRequestAsync(snapshot, request, variables, warnings, ct); }
+            try
+            {
+                var warningCount = warnings.Count;
+                responses[name] = await ReadRequestAsync(snapshot, request, variables, warnings, ct);
+                if (warnings.Skip(warningCount).Any(value => value.StartsWith("supplement:", StringComparison.Ordinal)))
+                    uncertain.Add(name);
+            }
             catch (AdapterReadException error) when (!request.Required)
             {
                 failed.Add(name);
@@ -95,6 +102,8 @@ public sealed class AdapterRuntime(AdapterTransport transport)
         }
         var fields = definition.Mapping.Fields.ToDictionary(x => x.Key,
             x => MapField(x.Value, responses, variables), StringComparer.Ordinal);
+        var fieldStatus = definition.Mapping.Fields.ToDictionary(x => x.Key,
+            x => x.Value.Constant is null && (failed.Contains(x.Value.Request) || uncertain.Contains(x.Value.Request)) ? "retry" : "complete", StringComparer.Ordinal);
         string Text(string field, int limit = 6000) => fields.TryGetValue(field, out var values) ? Plain(values.FirstOrDefault() ?? "", limit) : "";
         string[] Strings(string field) => fields.GetValueOrDefault(field, []).Where(x => !string.IsNullOrWhiteSpace(x)).Distinct().ToArray();
         int Number(string field) => int.TryParse(Text(field), NumberStyles.Integer, CultureInfo.InvariantCulture, out var value) ? value : 0;
@@ -144,7 +153,7 @@ public sealed class AdapterRuntime(AdapterTransport transport)
             Creator = fields.TryGetValue("creator", out var creators) ? Plain(string.Join(", ", creators), 250) : "",
             Year = Number("year"), Rating = double.IsFinite(rating) ? Math.Clamp(rating, 0, 10) : 0,
             Episodes = episodes > 0 ? episodes : null, ReleaseStatus = Text("releaseStatus", 32),
-            SourceUrl = sourceUrl, Assets = assets.ToArray(), AssetStatus = assetStatus,
+            SourceUrl = sourceUrl, Assets = assets.ToArray(), AssetStatus = assetStatus, FieldStatus = fieldStatus,
             Metadata = metadataDocument.RootElement.Clone(), Country = country, Language = language, Warnings = warnings.ToArray()
         };
     }

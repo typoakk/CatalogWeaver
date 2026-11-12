@@ -19,13 +19,15 @@ cloud "API источников и CDN" as Sources
 package "CatalogWeaver / Linux Docker" {
   component "Bootstrap → PostgreSQL → миграции\nАвтоматический первый запуск" as Bootstrap
   component "Управляющий REST API\nПроверка · настройка · запуск" as API
+  component "Бюджет preview\nОбщий предел и полный таймаут" as Preview
   component "Реестр адаптеров\nПроверка и версия JSON" as Registry
   component "Реестр кодировщиков\nАвтообнаружение · профили · ошибки" as EncoderRegistry
   component "Очередь и worker\nОбход ID · cursor · leases · retries" as Queue
+  component "Контроль фоновых циклов\nВосстановление · heartbeat · диагностика" as Supervision
   component "Единый оркестратор" as Orchestrator
   component "AdapterRuntime + HTTP\nЗапросы · лимитер · нормализация" as Runtime
   component "Общий конвейер изображений\nОдин download · staging · проверки\nПерекодирование · fallback · SHA-256" as Images
-  component "Драйвер magick\nИсполнение отдельного профиля" as Codec
+  component "Общий инструмент magick\nОграниченные дочерние процессы\nОтмена → завершение процесса" as Codec
   component "StandalonePersistence\nСостояние и доставка результата" as Persistence
   component "Общий PostgreSQL writer\nСхема · mapping · read-only план · запись" as Writer
   component "Единый ImportResult\nКарточка · материалы · ссылки · статус" as Result
@@ -45,7 +47,11 @@ EncoderRegistry --> Registry : разрешённые инструкции пр�
 API --> Registry
 API --> EncoderRegistry
 API --> Queue
-API --> Orchestrator : preview
+API --> Preview : preview карточки / discovery
+Preview --> Orchestrator
+Preview --> Runtime : discovery preview
+API --> Supervision : ready / status
+Supervision --> Queue : отдельный контроль каждого цикла
 Registry --> Queue : снимок JSON + параметры профиля
 Queue --> Orchestrator : задание зафиксированной версии
 Orchestrator --> Runtime
@@ -55,6 +61,7 @@ Orchestrator --> Images
 Images --> Codec : профиль из снимка
 Images --> Media : публикация выбранного файла
 Orchestrator --> Persistence
+Persistence --> Images : журнал намерения → публикация
 Persistence --> Writer : необязательное назначение
 Writer --> Target : настроенные таблицы и колонки
 Persistence <--> State
@@ -74,6 +81,20 @@ note right of EncoderRegistry
   Новые профили доступны через API.
   Поставленные задания сохраняют свои параметры.
 end note
+note right of Persistence
+  До публикации записывается намерение.
+  После commit сохраняются ссылки и снимается намерение.
+  Очистка выбирает собственные файлы пакетами,
+  учитывая активные публикации и экспортные резервы.
+  Неудачные поля сохраняют прежние значения;
+  успешная пустота разрешает очистку поля.
+end note
+note left of API
+  ETag / If-Match защищают настройки.
+  Списки имеют cursor.
+  OpenAPI и JSON Schema — для будущего GUI.
+  Шаблоны обновления сравниваются без перезаписи.
+end note
 @enduml
 
 @startuml CatalogWeaver_ImportCycle
@@ -84,7 +105,7 @@ start
 :Сохранить задание со снимком адаптера\nи разрешёнными инструкциями профиля;
 :Получить задание с арендой и heartbeat;
 :Выполнить HTTP-инструкции с общими лимитами;
-:Нормализовать карточку, теги и список материалов;
+:Нормализовать карточку, теги и список материалов\nРазделить complete / retry для полей и ролей;
 while (Есть следующий материал?) is (да)
   if (storage = link?) then (да)
     :Сохранить исходный URL в результате;
@@ -121,19 +142,42 @@ while (Есть следующий материал?) is (да)
       endif
     endif
     :Вычислить SHA-256 и фактический MIME;
-    :Опубликовать выбранный файл\nили оставить временным для preview;
+    if (Preview?) then (да)
+      :Оставить результат в staging;
+    else (нет)
+      :Записать намерение публикации в служебную БД\nПроверить аренду и защитить файл от очистки;
+      :Опубликовать выбранный файл;
+    endif
   endif
 endwhile (нет)
 if (Preview?) then (да)
   :При запросе построить read-only план БД;
   :Удалить временные файлы;
 else (импорт)
+  :Сохранить прежние значения недоступных полей\nНе перезаписывать недостоверные поля внешней БД;
   :Закрепить экспортируемые файлы;
   :Записать необязательное назначение\nпо инструкциям адаптера;
-  :Зафиксировать собственный результат и ссылки;
+  :Зафиксировать собственный результат и ссылки\nЗакрыть намерения публикации;
   :Удалить staging с оригиналом и кандидатами;
   :Завершить задание или назначить повтор;
 endif
 :Вернуть единый ImportResult;
+stop
+@enduml
+
+@startuml CatalogWeaver_Recovery
+title CatalogWeaver — резервное копирование и восстановление
+skinparam shadowing false
+start
+:Проверить стандартные именованные тома\nи фактические подключения контейнеров;
+:Остановить worker;
+:Сохранить PostgreSQL, файлы, настройки, секреты\nи фактический runtime-образ;
+:Проверить архив и контрольные суммы\nПоставить COMPLETE, возобновить исходный сервис;
+:Выбрать совершенно новый Compose-проект;
+:Проверить копию и отсутствие целевых томов\nЗагрузить сохранённый образ, восстановить данные;
+:Применить совместимые служебные миграции\nСбросить старые активные аренды;
+:Запустить API с WorkersEnabled=false;
+:Проверить результат и внешние назначения;
+:Явно возобновить worker;
 stop
 @enduml

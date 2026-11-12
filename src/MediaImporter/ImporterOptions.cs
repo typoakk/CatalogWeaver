@@ -8,10 +8,13 @@ public sealed class ImporterOptions
     public string ApiKey { get; set; } = "";
     public string PersistenceMode { get; set; } = "Standalone";
     public int WorkerCount { get; set; } = 2;
+    public bool WorkersEnabled { get; set; } = true;
     public int MaximumAttempts { get; set; } = 16;
     public int LeaseSeconds { get; set; } = 180;
     public int ImportTimeoutSeconds { get; set; } = 1800;
     public int RefreshHours { get; set; } = 24;
+    public int PreviewCount { get; set; } = 2;
+    public int PreviewTimeoutSeconds { get; set; } = 120;
 
     public void Validate()
     {
@@ -23,7 +26,8 @@ public sealed class ImporterOptions
             throw new InvalidOperationException("Set Importer:ApiKey to a private value of at least 32 characters.");
         if (WorkerCount is < 1 or > 16 || MaximumAttempts is < 1 or > 32
             || LeaseSeconds is < 30 or > 3600 || ImportTimeoutSeconds is < 30 or > 86400
-            || RefreshHours is < 1 or > 8760)
+            || RefreshHours is < 1 or > 8760 || PreviewCount is < 1 or > 16
+            || PreviewTimeoutSeconds is < 1 or > 3600)
             throw new InvalidOperationException("Invalid importer worker, retry, lease or scheduling settings.");
     }
 }

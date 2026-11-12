@@ -1,4 +1,5 @@
 using MediaImporter.Database;
+using MediaImporter.Images;
 
 namespace MediaImporter;
 
@@ -6,12 +7,15 @@ public sealed record CatalogFileReference(string Hash, string RelativePath);
 
 public sealed record PersistenceResult(string MediaId, bool Created, CatalogFileReference[] CleanupFiles)
 {
+    public AdapterItem? Item { get; init; }
     public AssetResult[] Assets { get; init; } = [];
     public Dictionary<string, string> AssetStatus { get; init; } = new(StringComparer.Ordinal);
 }
 
 public interface IImportPersistence
 {
+    Task<PublishedImage> PublishAsync(PreparedImage image, ImportJob? job, CancellationToken cancellationToken)
+        => throw new NotSupportedException("This persistence implementation does not support managed publication.");
     Task<PersistenceResult> SaveAsync(AdapterItem imported, IReadOnlyList<AssetResult> results,
         string adapterVersion, CancellationToken cancellationToken, ImportJob? job = null,
         DatabaseDestination? destination = null);

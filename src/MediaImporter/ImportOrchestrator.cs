@@ -45,7 +45,7 @@ public sealed class ImportOrchestrator(AdapterRuntime runtime, AdapterTransport 
                                 return downloaded.Bytes;
                             }, ct, adapter.Definition.AssetPolicies.GetValueOrDefault(asset.Role)?.ResolvedImageProfile);
                         prepared.Add(image);
-                        var published = preview ? null : await images.PublishAsync(image, ct);
+                        var published = preview ? null : await persistence.PublishAsync(image, job, ct);
                         result = result with
                         {
                             SourceUrl = selectedUrl, State = "stored",
@@ -62,18 +62,22 @@ public sealed class ImportOrchestrator(AdapterRuntime runtime, AdapterTransport 
                         result = result with { State = "missing", Error = error.Code };
                         warnings.Add("asset_missing:" + asset.Role);
                     }
-                    catch (Exception error) when (error is IOException or InvalidDataException or AdapterReadException
+                    catch (Exception error) when (error is IOException or InvalidDataException or AdapterReadException { Retryable: true }
                         or ImageMagick.MagickException or DllNotFoundException or EntryPointNotFoundException or TypeInitializationException
                         || error is OperationCanceledException && !ct.IsCancellationRequested)
                     {
-                        result = result with { State = "retry", Error = error.GetType().Name };
-                        warnings.Add("asset_retry:" + asset.Role + ":" + error.GetType().Name);
+                        var failure = ImportErrors.Classify(error);
+                        result = result with { State = "retry", Error = failure.Code };
+                        warnings.Add("asset_retry:" + asset.Role + ":" + failure.Code);
+                        logger.LogWarning("Asset {Provider}/{ExternalId} role {Role} failed: {Code}; {Reason}",
+                            item.Provider, item.ExternalId, asset.Role, failure.Code, failure.SafeMessage);
                     }
                 }
                 assets.Add(result);
             }
 
             var partial = item.AssetStatus.Values.Contains("retry", StringComparer.Ordinal)
+                || item.FieldStatus.Values.Contains("retry", StringComparer.Ordinal)
                 || assets.Any(asset => asset.State == "retry")
                 || item.Warnings.Any(warning => warning.StartsWith("supplement:", StringComparison.Ordinal));
             if (preview && planDatabase)
@@ -105,7 +109,7 @@ public sealed class ImportOrchestrator(AdapterRuntime runtime, AdapterTransport 
             {
                 Mode = preview ? "preview" : "import", Provider = item.Provider, ExternalId = item.ExternalId,
                 MediaId = saved?.MediaId ?? plan?.MediaId, AdapterVersion = adapter.Version, Status = partial ? "partial" : "completed",
-                Item = saved is null ? item : item with { AssetStatus = saved.AssetStatus },
+                Item = saved?.Item ?? plan?.Item ?? (saved is null ? item : item with { AssetStatus = saved.AssetStatus }),
                 Assets = saved?.Assets ?? assets.ToArray(), Warnings = warnings.Concat(plan?.Warnings ?? []).Distinct().ToArray(),
                 Plan = plan
             };

@@ -12,6 +12,8 @@ public sealed partial class PostgresDatabaseWriter
         var name = "p" + command.Parameters.Count.ToString(CultureInfo.InvariantCulture);
         var parameter = new NpgsqlParameter { ParameterName = name };
         var type = column.TypeName;
+        try
+        {
         if (value is null)
         { parameter.Value = DBNull.Value; parameter.NpgsqlDbType = NpgsqlDbType.Unknown; }
         else if (type is "json" or "jsonb")
@@ -35,7 +37,7 @@ public sealed partial class PostgresDatabaseWriter
         else
         {
             var text = StringValue(value);
-            if (column.MaximumLength is { } limit && text.Length > limit) throw new InvalidDataException("Value exceeds column length: " + column.Name);
+            if (column.MaximumLength is { } limit && text.EnumerateRunes().Count() > limit) throw new InvalidDataException("Value exceeds column length: " + column.Name);
             parameter.Value = type switch
             {
                 "int2" => short.Parse(text, CultureInfo.InvariantCulture), "int4" => int.Parse(text, CultureInfo.InvariantCulture),
@@ -47,6 +49,11 @@ public sealed partial class PostgresDatabaseWriter
                 _ => text
             };
             if (parameter.Value is string) parameter.NpgsqlDbType = NpgsqlDbType.Unknown;
+        }
+        }
+        catch (Exception error) when (error is FormatException or OverflowException or ArgumentException)
+        {
+            throw new InvalidDataException("Invalid value for column " + column.Name + " (" + type + ").", error);
         }
         command.Parameters.Add(parameter);
         return "@" + name;

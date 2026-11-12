@@ -6,6 +6,7 @@ RUN --mount=type=cache,target=/root/.nuget/packages dotnet restore src/MediaImpo
 COPY src/ src/
 COPY adapters/ adapters/
 COPY encoders/ encoders/
+COPY schemas/ schemas/
 RUN --mount=type=cache,target=/root/.nuget/packages dotnet publish src/MediaImporter/MediaImporter.csproj -c Release -r ${TARGETRID} --self-contained false --no-restore /p:UseAppHost=false -o /out
 
 FROM build AS checks
@@ -14,6 +15,8 @@ RUN --mount=type=cache,target=/root/.nuget/packages dotnet build tests/MediaImpo
 ENTRYPOINT ["dotnet", "vstest", "tests/MediaImporter.Tests/bin/Release/net10.0/linux-x64/MediaImporter.Tests.dll"]
 
 FROM mcr.microsoft.com/dotnet/aspnet:10.0-noble AS runtime
+ARG SOURCE_REVISION=unknown
+LABEL org.opencontainers.image.version="0.2.0" org.opencontainers.image.revision=$SOURCE_REVISION io.catalogweaver.backup-format="1"
 USER root
 RUN apt-get update && apt-get install -y --no-install-recommends curl ca-certificates && rm -rf /var/lib/apt/lists/*
 WORKDIR /app
