@@ -1,0 +1,75 @@
+services:
+  bootstrap:
+    image: ${CATALOGWEAVER_IMAGE:-catalogweaver:local}
+    build: .
+    command: ["--bootstrap"]
+    environment:
+      Importer__ConfigurationPath: /data/config
+      Bootstrap__DatabasePassword: ${IMPORTER_DB_PASSWORD:-}
+      Bootstrap__ApiKey: ${IMPORTER_API_KEY:-}
+    volumes:
+      - configuration:/data/config
+    restart: "no"
+  state:
+    image: postgres:18
+    environment:
+      POSTGRES_DB: media_importer
+      POSTGRES_USER: media_importer
+      POSTGRES_PASSWORD_FILE: /run/catalogweaver/database-password
+    volumes:
+      - state:/var/lib/postgresql
+      - configuration:/run/catalogweaver:ro
+    depends_on:
+      bootstrap:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U media_importer -d media_importer"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    restart: unless-stopped
+  migrate:
+    image: ${CATALOGWEAVER_IMAGE:-catalogweaver:local}
+    pull_policy: never
+    command: ["--migrate"]
+    environment: &settings
+      ConnectionStrings__ImporterDb: Host=state;Database=media_importer;Username=media_importer
+      ConnectionStrings__Catalog: ${CATALOG_DATABASE_CONNECTION:-}
+      Importer__DatabasePasswordFile: /data/config/database-password
+      Importer__ApiKeyFile: /data/config/api-key
+      Importer__PersistenceMode: Standalone
+      Importer__MediaRoot: /data/media
+      Importer__AdaptersPath: /app/adapters
+      Importer__EncodersPath: /app/encoders
+      Importer__MinimumFreeBytes: ${IMPORTER_MINIMUM_FREE_BYTES:-5368709120}
+      Importer__Secrets__SteamApiKey: ${STEAM_API_KEY:-}
+    volumes:
+      - configuration:/data/config:ro
+    depends_on:
+      state:
+        condition: service_healthy
+  importer:
+    image: ${CATALOGWEAVER_IMAGE:-catalogweaver:local}
+    pull_policy: never
+    environment: *settings
+    volumes:
+      - configuration:/data/config:ro
+      - adapters:/app/adapters
+      - encoders:/app/encoders
+      - media:/data/media
+    ports:
+      - "127.0.0.1:${IMPORTER_PORT:-8770}:8080"
+    depends_on:
+      state:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+    init: true
+    restart: unless-stopped
+    stop_grace_period: 30s
+volumes:
+  configuration:
+  state:
+  adapters:
+  encoders:
+  media:

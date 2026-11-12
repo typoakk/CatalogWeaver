@@ -1,0 +1,139 @@
+@startuml CatalogWeaver_Components
+!pragma layout smetana
+title CatalogWeaver — самостоятельный сервис, текущая архитектура
+top to bottom direction
+skinparam backgroundColor #FFFFFF
+skinparam shadowing false
+skinparam defaultFontName Arial
+skinparam componentStyle rectangle
+skinparam componentBackgroundColor #EAF2F8
+skinparam componentBorderColor #486581
+skinparam ArrowColor #486581
+skinparam noteBackgroundColor #FFF6D8
+
+actor "Пользователь / клиент\nБудущий GUI" as Client
+folder "adapters/{provider}/adapter.json\nПолучение · mapping · политики · назначения" as Adapters
+folder "encoders/{module}/encoder.json\nФормат · качество · defines" as Encoders
+cloud "API источников и CDN" as Sources
+
+package "CatalogWeaver / Linux Docker" {
+  component "Bootstrap → PostgreSQL → миграции\nАвтоматический первый запуск" as Bootstrap
+  component "Управляющий REST API\nПроверка · настройка · запуск" as API
+  component "Реестр адаптеров\nПроверка и версия JSON" as Registry
+  component "Реестр кодировщиков\nАвтообнаружение · профили · ошибки" as EncoderRegistry
+  component "Очередь и worker\nОбход ID · cursor · leases · retries" as Queue
+  component "Единый оркестратор" as Orchestrator
+  component "AdapterRuntime + HTTP\nЗапросы · лимитер · нормализация" as Runtime
+  component "Общий конвейер изображений\nОдин download · staging · проверки\nПерекодирование · fallback · SHA-256" as Images
+  component "Драйвер magick\nИсполнение отдельного профиля" as Codec
+  component "StandalonePersistence\nСостояние и доставка результата" as Persistence
+  component "Общий PostgreSQL writer\nСхема · mapping · read-only план · запись" as Writer
+  component "Единый ImportResult\nКарточка · материалы · ссылки · статус" as Result
+}
+database "Собственная PostgreSQL\nОчередь · лимиты · карточки · файлы" as State
+folder "Постоянные тома\nconfiguration · adapters · encoders\nСекреты и рабочие настройки" as Settings
+database "Необязательная существующая\nPostgreSQL приложения" as Target
+folder "MediaRoot/{directory}/{SHA-256}\nВыбранные файлы" as Media
+component "Приложение пользователя\nили файловый сервер" as Application
+
+Client --> API
+Bootstrap --> Settings : создать секреты один раз
+Bootstrap --> State : запустить и применить служебную схему
+Adapters --> Registry : автообнаружение
+Encoders --> EncoderRegistry : каждые 2 секунды
+EncoderRegistry --> Registry : разрешённые инструкции профиля
+API --> Registry
+API --> EncoderRegistry
+API --> Queue
+API --> Orchestrator : preview
+Registry --> Queue : снимок JSON + параметры профиля
+Queue --> Orchestrator : задание зафиксированной версии
+Orchestrator --> Runtime
+Runtime <--> Sources
+Runtime <--> State : общий лимитер
+Orchestrator --> Images
+Images --> Codec : профиль из снимка
+Images --> Media : публикация выбранного файла
+Orchestrator --> Persistence
+Persistence --> Writer : необязательное назначение
+Writer --> Target : настроенные таблицы и колонки
+Persistence <--> State
+Queue <--> State
+Orchestrator --> Result
+Result --> API
+Target --> Application
+Media --> Application
+
+note right of Target
+  Таблицы и миграции принадлежат приложению.
+  В БД записываются ссылки и метаданные;
+  файлы находятся в MediaRoot.
+end note
+note right of EncoderRegistry
+  Неверная правка сохраняет рабочую версию.
+  Новые профили доступны через API.
+  Поставленные задания сохраняют свои параметры.
+end note
+@enduml
+
+@startuml CatalogWeaver_ImportCycle
+title CatalogWeaver — цикл карточки и перекодирования
+skinparam shadowing false
+start
+:Получить ID из запроса или страницы обхода;
+:Сохранить задание со снимком адаптера\nи разрешёнными инструкциями профиля;
+:Получить задание с арендой и heartbeat;
+:Выполнить HTTP-инструкции с общими лимитами;
+:Нормализовать карточку, теги и список материалов;
+while (Есть следующий материал?) is (да)
+  if (storage = link?) then (да)
+    :Сохранить исходный URL в результате;
+  else (local)
+    :Скачать оригинал один раз в staging;
+    :Проверить оригинал;
+    if (imageProfile = original?) then (да)
+      :Выбрать оригинал;
+    else (перекодирование)
+      :accepted = false; attempt = 0;
+      while (attempt < 2 и accepted = false?) is (да)
+        :attempt = attempt + 1;
+        :Перекодировать оригинал в новый кандидат\nпо зафиксированному профилю;
+        if (Кандидат создан?) then (да)
+          :Проверить формат, декодирование,\nразмеры и прозрачность;
+          if (Проверка успешна?) then (да)
+            :accepted = true;
+          else (нет)
+            :Повторно проверить тот же кандидат;
+            if (Повторная проверка успешна?) then (да)
+              :accepted = true;
+            else (нет)
+              :Удалить неудачный кандидат;
+            endif
+          endif
+        else (нет)
+          :Удалить незавершённый кандидат;
+        endif
+      endwhile (нет)
+      if (accepted?) then (да)
+        :Выбрать проверенный кандидат\nнезависимо от сравнения размера;
+      else (нет)
+        :Выбрать проверенный оригинал;
+      endif
+    endif
+    :Вычислить SHA-256 и фактический MIME;
+    :Опубликовать выбранный файл\nили оставить временным для preview;
+  endif
+endwhile (нет)
+if (Preview?) then (да)
+  :При запросе построить read-only план БД;
+  :Удалить временные файлы;
+else (импорт)
+  :Закрепить экспортируемые файлы;
+  :Записать необязательное назначение\nпо инструкциям адаптера;
+  :Зафиксировать собственный результат и ссылки;
+  :Удалить staging с оригиналом и кандидатами;
+  :Завершить задание или назначить повтор;
+endif
+:Вернуть единый ImportResult;
+stop
+@enduml

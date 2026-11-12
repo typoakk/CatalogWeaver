@@ -1,0 +1,60 @@
+name: CatalogWeaver checks
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  linux-postgres:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    services:
+      postgres:
+        image: postgres:18
+        env:
+          POSTGRES_DB: catalogweaver_ci_test
+          POSTGRES_USER: catalogweaver_test
+          POSTGRES_PASSWORD: ci-only-local-password
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U catalogweaver_test -d catalogweaver_ci_test"
+          --health-interval 5s --health-timeout 5s --health-retries 20
+    env:
+      MEDIA_IMPORTER_TEST_CONNECTION: Host=127.0.0.1;Database=catalogweaver_ci_test;Username=catalogweaver_test;Password=ci-only-local-password
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/setup-dotnet@0f4a354dd5547a28c70b7853dbd95d5b67886e73 # v6
+        with:
+          dotnet-version: 10.0.x
+      - name: Test against PostgreSQL
+        run: dotnet test tests/MediaImporter.Tests/MediaImporter.Tests.csproj -c Release -r linux-x64 --logger "trx;LogFileName=checks.trx" --results-directory TestResults
+      - name: Publish standalone runtime
+        run: dotnet publish src/MediaImporter/MediaImporter.csproj -c Release -r linux-x64 --self-contained false -o artifacts/linux-x64
+      - name: Verify CLI without application database
+        run: dotnet artifacts/linux-x64/CatalogWeaver.dll --help
+      - name: Build Docker runtime
+        run: docker build --target runtime -t catalogweaver:ci .
+      - name: Verify first Compose startup without dotenv
+        env:
+          CATALOGWEAVER_IMAGE: catalogweaver:ci
+        run: |
+          test ! -f .env
+          docker compose -p catalogweaver-smoke up --no-build -d --wait --wait-timeout 120
+          docker compose -p catalogweaver-smoke exec -T importer curl -fsS http://127.0.0.1:8080/health/ready
+          key=$(docker compose -p catalogweaver-smoke exec -T importer cat /data/config/api-key)
+          test ${#key} -ge 32
+          docker compose -p catalogweaver-smoke exec -T importer curl -fsS -H "Authorization: Bearer $key" http://127.0.0.1:8080/api/v1/importer/adapters
+          before=$(docker compose -p catalogweaver-smoke exec -T importer sha256sum /data/config/api-key)
+          docker compose -p catalogweaver-smoke run --rm bootstrap
+          after=$(docker compose -p catalogweaver-smoke exec -T importer sha256sum /data/config/api-key)
+          test "$before" = "$after"
+      - name: Remove temporary Compose data
+        if: always()
+        env:
+          CATALOGWEAVER_IMAGE: catalogweaver:ci
+        run: docker compose -p catalogweaver-smoke down --volumes --remove-orphans

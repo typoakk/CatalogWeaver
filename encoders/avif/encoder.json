@@ -1,0 +1,9 @@
+{
+  "configVersion": 1,
+  "id": "avif",
+  "displayName": "AVIF",
+  "driver": "magick",
+  "format": "Avif",
+  "defines": { "heic:chroma": "444", "heic:speed": "6" },
+  "qualityRange": { "prefix": "avif", "minimum": 1, "maximum": 100 }
+}

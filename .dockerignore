@@ -1,0 +1,13 @@
+.git
+.local
+.env
+.env.*
+**/*.env
+data
+private
+**/bin
+**/obj
+**/TestResults
+**/*.trx
+dist
+artifacts

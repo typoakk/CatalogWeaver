@@ -1,0 +1,4 @@
+<Solution>
+  <Project Path="src/MediaImporter/MediaImporter.csproj" />
+  <Project Path="tests/MediaImporter.Tests/MediaImporter.Tests.csproj" />
+</Solution>

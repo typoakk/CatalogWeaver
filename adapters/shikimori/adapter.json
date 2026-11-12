@@ -1,0 +1,116 @@
+{
+  "configVersion": 1,
+  "provider": "shikimori",
+  "displayName": "Shikimori",
+  "enabled": false,
+  "kind": "anime",
+  "refreshHours": 24,
+  "baseUrl": "https://shikimori.io",
+  "sourceUrlTemplate": "https://shikimori.io/animes/{{externalId}}",
+  "allowedHosts": ["shikimori.io", "shikimori.one"],
+  "rateLimit": {
+    "requestsPerSecond": 1,
+    "requestsPerMinute": 30
+  },
+  "destinations": {
+    "files": {
+      "directory": "shikimori"
+    }
+  },
+  "discovery": {
+    "request": "discover",
+    "pagination": {
+      "type": "page",
+      "startPage": 1,
+      "pageSize": 50,
+      "stopOnEmpty": true
+    },
+    "itemsPath": "$",
+    "externalIdPath": "$.id",
+    "namePath": "$.name"
+  },
+  "requests": {
+    "discover": {
+      "method": "GET",
+      "path": "/api/animes",
+      "query": {
+        "order": "id",
+        "limit": "{{pageSize}}",
+        "page": "{{page}}"
+      },
+      "responseKind": "array"
+    },
+    "item": {
+      "method": "GET",
+      "path": "/api/animes/{{externalId}}",
+      "required": true,
+      "responseKind": "object",
+      "identityPath": "$.id",
+      "requiredPaths": ["$.name"]
+    },
+    "poster": {
+      "method": "POST",
+      "path": "/api/graphql",
+      "graphQl": true,
+      "body": {
+        "query": "{ animes(ids: \"{{externalId}}\", limit: 1) { id poster { originalUrl } } }"
+      },
+      "responseRootPath": "$.data.animes[0]",
+      "responseKind": "object",
+      "identityPath": "$.id",
+      "requiredPaths": ["$.poster"]
+    },
+    "screenshots": {
+      "method": "GET",
+      "path": "/api/animes/{{externalId}}/screenshots",
+      "responseKind": "array"
+    },
+    "videos": {
+      "method": "GET",
+      "path": "/api/animes/{{externalId}}/videos",
+      "responseKind": "array"
+    }
+  },
+  "mapping": {
+    "fields": {
+      "externalId": { "request": "item", "path": "$.id" },
+      "title": { "request": "item", "paths": ["$.russian", "$.name"], "selection": "firstNonEmpty", "transform": "title" },
+      "originalTitle": { "request": "item", "path": "$.name", "transform": "title" },
+      "alternativeTitles": { "request": "item", "paths": ["$.english[*]", "$.japanese[*]", "$.synonyms[*]", "$.name"], "selection": "all", "transform": "title" },
+      "description": { "request": "item", "paths": ["$.description", "$.description_html"], "selection": "firstNonEmpty", "transform": "plainText" },
+      "genres": { "request": "item", "itemsPath": "$.genres[*]", "paths": ["$.russian", "$.name"], "selection": "firstNonEmpty" },
+      "creator": { "request": "item", "path": "$.studios[*].name" },
+      "year": { "request": "item", "path": "$.aired_on", "transform": "year" },
+      "rating": { "request": "item", "path": "$.score", "transform": "number" },
+      "episodes": { "request": "item", "path": "$.episodes" },
+      "releaseStatus": { "request": "item", "path": "$.status" }
+    },
+    "assets": {
+      "poster": {
+        "request": "poster",
+        "itemsPath": "$.poster",
+        "urlPath": "$.originalUrl",
+        "requireUrl": true
+      },
+      "screenshot": {
+        "request": "screenshots",
+        "itemsPath": "$[*]",
+        "urlPath": "$.original",
+        "requireUrl": true,
+        "resolveRelativeUrls": true
+      },
+      "video": {
+        "request": "videos",
+        "itemsPath": "$[*]",
+        "urlPath": "$.url",
+        "requireUrl": true,
+        "titlePath": "$.name"
+      }
+    }
+  },
+  "assetPolicies": {
+    "poster": { "storage": "local", "imageProfile": "avif80", "maxItems": 1 },
+    "screenshot": { "storage": "link" },
+    "video": { "storage": "link" }
+  }
+}

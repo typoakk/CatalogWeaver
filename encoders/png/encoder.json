@@ -1,0 +1,9 @@
+{
+  "configVersion": 1,
+  "id": "png",
+  "displayName": "PNG без потерь",
+  "driver": "magick",
+  "format": "Png",
+  "defines": { "png:compression-level": "9", "png:exclude-chunk": "date,time" },
+  "profiles": [ { "name": "png-lossless" } ]
+}

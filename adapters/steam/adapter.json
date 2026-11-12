@@ -1,0 +1,202 @@
+{
+  "configVersion": 1,
+  "provider": "steam",
+  "displayName": "Steam",
+  "enabled": false,
+  "kind": "game",
+  "refreshHours": 168,
+  "baseUrl": "https://store.steampowered.com",
+  "sourceUrlTemplate": "https://store.steampowered.com/app/{{externalId}}/",
+  "allowedHosts": ["steampowered.com", "steamstatic.com", "steamusercontent.com"],
+  "variables": {
+    "country": "us",
+    "language": "russian",
+    "resultLanguage": "russian",
+    "originalTitle": ""
+  },
+  "rateLimit": {
+    "requestsPerSecond": 1,
+    "requestsPerMinute": 30
+  },
+  "destinations": {
+    "files": { "directory": "steam" }
+  },
+  "discovery": {
+    "request": "discover",
+    "pagination": {
+      "type": "cursor",
+      "pageSize": 10000,
+      "stopOnEmpty": true,
+      "nextCursorPath": "$.response.last_appid",
+      "hasMorePath": "$.response.have_more_results",
+      "hasMoreWhenMissing": "fullPage",
+      "cursorFromLastId": true
+    },
+    "itemsPath": "$.response.apps[*]",
+    "externalIdPath": "$.appid",
+    "namePath": "$.name",
+    "modifiedPath": "$.last_modified"
+  },
+  "requests": {
+    "discover": {
+      "method": "GET",
+      "baseUrl": "https://api.steampowered.com",
+      "path": "/IStoreService/GetAppList/v1/",
+      "query": {
+        "key": "{{secret:SteamApiKey}}",
+        "input_json": {
+          "include_games": true,
+          "include_dlc": false,
+          "include_software": false,
+          "include_videos": false,
+          "include_hardware": false,
+          "last_appid": "{{cursor}}",
+          "max_results": "{{pageSize}}"
+        }
+      },
+      "maximumResponseBytes": 16777216,
+      "responseKind": "object",
+      "requiredPaths": ["$.response.apps"]
+    },
+    "item": {
+      "method": "GET",
+      "path": "/api/appdetails",
+      "query": { "appids": "{{externalId}}", "cc": "{{country}}", "l": "{{language}}" },
+      "required": true,
+      "availabilityPath": "$['{{externalId}}'].success",
+      "responseRootPath": "$['{{externalId}}'].data",
+      "responseKind": "object",
+      "identityPath": "$.steam_appid",
+      "filterPath": "$.type",
+      "filterValue": "game",
+      "alternativeVariables": { "country": ["us", "jp", "kz", "tr", "gb", "ca"] },
+      "supplement": {
+        "whenMissingGroups": [["$.short_description"], ["$.detailed_description", "$.about_the_game"]],
+        "fillPaths": ["$.short_description", "$.detailed_description", "$.about_the_game"],
+        "variables": { "language": "english" },
+        "captureVariables": { "originalTitle": "$.name" }
+      }
+    },
+    "browse": {
+      "method": "GET",
+      "baseUrl": "https://api.steampowered.com",
+      "path": "/IStoreBrowseService/GetItems/v1/",
+      "query": {
+        "input_json": {
+          "ids": [{ "appid": "{{externalId}}" }],
+          "context": { "language": "{{language}}", "country_code": "{{country|upper}}" },
+          "data_request": {
+            "include_assets": true,
+            "include_assets_without_overrides": true,
+            "include_basic_info": true,
+            "include_release": true,
+            "include_platforms": true,
+            "include_ratings": true,
+            "include_reviews": true,
+            "include_screenshots": true,
+            "include_trailers": true,
+            "include_full_description": true,
+            "include_supported_languages": true,
+            "include_links": true,
+            "include_extra_details": true
+          }
+        }
+      },
+      "responseRootPath": "$.response.store_items[0]",
+      "allowEmptyRoot": true,
+      "responseKind": "object",
+      "identityPaths": ["$.appid", "$.id"],
+      "successPath": "$.success",
+      "successValues": ["true", "1"]
+    }
+  },
+  "mapping": {
+    "fields": {
+      "externalId": { "request": "item", "path": "$.steam_appid" },
+      "title": { "request": "item", "path": "$.name", "transform": "title" },
+      "originalTitle": { "request": "item", "constant": "{{originalTitle}}", "transform": "title" },
+      "description": { "request": "item", "paths": ["$.short_description", "$.detailed_description", "$.about_the_game"], "selection": "firstNonEmpty", "transform": "plainText" },
+      "genres": { "request": "item", "path": "$.genres[*].description" },
+      "creator": { "request": "item", "path": "$.developers[*]" },
+      "year": { "request": "item", "path": "$.release_date.date", "transform": "year" },
+      "releaseStatus": { "request": "item", "path": "$.release_date.coming_soon", "transform": "releaseStatus" },
+      "country": { "request": "item", "constant": "{{country}}" },
+      "language": { "request": "item", "constant": "{{resultLanguage}}" }
+    },
+    "assets": {
+      "poster": {
+        "request": "browse",
+        "itemsPaths": ["$.assets", "$.assets_without_overrides"],
+        "formatPath": "$.asset_url_format",
+        "filePaths": ["$.library_capsule_2x", "$.library_capsule"],
+        "urlBase": "https://shared.akamai.steamstatic.com/store_item_assets/",
+        "requiredFormatPrefix": "steam/apps/{{externalId}}/${FILENAME}"
+      },
+      "hero": {
+        "request": "browse",
+        "itemsPaths": ["$.assets", "$.assets_without_overrides"],
+        "formatPath": "$.asset_url_format",
+        "filePaths": ["$.library_hero_2x", "$.library_hero"],
+        "urlBase": "https://shared.akamai.steamstatic.com/store_item_assets/",
+        "requiredFormatPrefix": "steam/apps/{{externalId}}/${FILENAME}"
+      },
+      "logo": {
+        "request": "item",
+        "urlTemplates": [
+          "https://shared.akamai.steamstatic.com/store_item_assets/steam/apps/{{externalId}}/logo_2x.png",
+          "https://shared.akamai.steamstatic.com/store_item_assets/steam/apps/{{externalId}}/logo.png"
+        ]
+      },
+      "header": {
+        "request": "item",
+        "urlPath": "$.header_image",
+        "upgradeHttp": true
+      },
+      "background": {
+        "request": "item",
+        "urlPaths": ["$.background_raw", "$.background"],
+        "upgradeHttp": true
+      },
+      "screenshot": {
+        "request": "item",
+        "itemsPath": "$.screenshots[*]",
+        "urlPath": "$.path_full",
+        "upgradeHttp": true
+      },
+      "video": {
+        "sources": [
+          {
+            "request": "item",
+            "itemsPath": "$.movies[*]",
+            "recursiveMediaUrls": true,
+            "titlePath": "$.name",
+            "emitAllUrls": true,
+            "upgradeHttp": true
+          },
+          {
+            "request": "browse",
+            "itemsPath": "$.trailers[*][*]",
+            "recursiveMediaUrls": true,
+            "formatPath": "$.trailer_url_format",
+            "filePaths": ["$.adaptive_trailers[*].cdn_path", "$.microtrailer[*].filename"],
+            "urlBase": "https://video.akamai.steamstatic.com/store_trailers/",
+            "requiredFormatPrefix": "steam/apps/${FILENAME}",
+            "requiredFilenamePrefix": "{{externalId}}/",
+            "titlePath": "$.trailer_name",
+            "emitAllUrls": true,
+            "upgradeHttp": true
+          }
+        ]
+      }
+    }
+  },
+  "assetPolicies": {
+    "poster": { "storage": "local", "imageProfile": "avif80", "maxItems": 1 },
+    "hero": { "storage": "local", "imageProfile": "avif80", "maxItems": 1 },
+    "logo": { "storage": "local", "imageProfile": "avif80", "maxItems": 1 },
+    "header": { "storage": "link", "maxItems": 1 },
+    "background": { "storage": "link", "maxItems": 1 },
+    "screenshot": { "storage": "link" },
+    "video": { "storage": "link" }
+  }
+}

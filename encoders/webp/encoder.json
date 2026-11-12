@@ -1,0 +1,12 @@
+{
+  "configVersion": 1,
+  "id": "webp",
+  "displayName": "WebP",
+  "driver": "magick",
+  "format": "WebP",
+  "defines": { "webp:method": "4", "webp:alpha-quality": "100" },
+  "qualityRange": { "prefix": "webp", "minimum": 1, "maximum": 100 },
+  "profiles": [
+    { "name": "webp-lossless", "quality": 100, "defines": { "webp:lossless": "true" } }
+  ]
+}

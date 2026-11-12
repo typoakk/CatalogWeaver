@@ -1,0 +1,38 @@
+{
+  "connection": "Catalog",
+  "localUrlTemplate": "https://media.example.test/files/{relativePath}",
+  "tables": [
+    {
+      "name": "card",
+      "schema": "public",
+      "table": "media",
+      "scope": "item",
+      "matchColumns": ["provider", "external_id"],
+      "returning": "id",
+      "columns": {
+        "provider": { "source": "item.provider" },
+        "external_id": { "source": "item.externalId" },
+        "title": { "source": "item.title" },
+        "description": { "source": "item.description", "onNull": "preserve" }
+      }
+    },
+    {
+      "name": "screenshots",
+      "schema": "public",
+      "table": "materials",
+      "scope": "assets",
+      "role": "screenshot",
+      "matchColumns": ["media_id", "role", "position"],
+      "replaceScope": {
+        "media_id": { "source": "result.card" },
+        "role": { "source": "asset.role" }
+      },
+      "columns": {
+        "media_id": { "source": "result.card" },
+        "role": { "source": "asset.role" },
+        "position": { "source": "asset.position" },
+        "url": { "source": "asset.url" }
+      }
+    }
+  ]
+}

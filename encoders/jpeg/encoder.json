@@ -1,0 +1,9 @@
+{
+  "configVersion": 1,
+  "id": "jpeg",
+  "displayName": "JPEG",
+  "driver": "magick",
+  "format": "Jpeg",
+  "rejectAlpha": true,
+  "qualityRange": { "prefix": "jpeg", "minimum": 1, "maximum": 100 }
+}

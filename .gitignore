@@ -1,0 +1,16 @@
+**/bin/
+**/obj/
+.local/
+.env
+.env.*
+!.env.example
+*.env
+*.dump
+*.backup
+data/
+private/
+*.user
+*.trx
+TestResults/
+dist/
+artifacts/

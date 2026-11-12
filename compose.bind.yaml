@@ -1,0 +1,7 @@
+# Optional: use editable host folders instead of the persistent configuration volumes.
+# The container runs as UID 1654; grant it write access for API configuration updates.
+services:
+  importer:
+    volumes:
+      - ./adapters:/app/adapters
+      - ./encoders:/app/encoders
