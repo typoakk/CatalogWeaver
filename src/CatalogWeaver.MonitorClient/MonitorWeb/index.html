@@ -1,24 +1,150 @@
 <!doctype html>
 <html lang="ru">
-<head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><meta name="color-scheme" content="dark"><title>CatalogWeaver — мониторинг</title><link rel="stylesheet" href="/monitor/styles.css"><script src="/monitor/app.js" defer></script></head>
-<body>
-<div id="shell" class="shell">
-  <aside class="sidebar"><a class="brand" href="#"><span class="brand-mark">CW</span><span>CatalogWeaver<small>LOCAL WEB CLIENT</small></span></a>
-    <div class="sidebar-section"><span class="eyebrow">ОКРУЖЕНИЯ</span><button id="add-environment" class="icon-button" aria-label="Добавить окружение" title="Добавить окружение">+</button></div>
-    <button id="all-environments" class="nav-item">◫ <span>Все окружения</span><span id="environment-count" class="count">1</span></button><nav id="environment-list" aria-label="Окружения"></nav>
-    <div class="sidebar-section"><span class="eyebrow">АДАПТЕРЫ</span><span id="adapter-count" class="count"></span></div><nav id="adapter-list" aria-label="Адаптеры"></nav>
-    <div class="sidebar-bottom"><span class="local-indicator"><i class="dot"></i> Клиент на этом ПК</span><button id="client-info" class="text-button">О клиенте</button></div>
-  </aside>
-  <div class="workspace"><header class="topbar"><div id="breadcrumbs">Окружения</div><div class="toolbar"><span id="refresh-state" class="fine" aria-live="polite">Подключение…</span><button id="refresh" class="small-button">Обновить</button></div></header>
-    <main id="main" tabindex="-1"></main><footer><span>CatalogWeaver</span><span>Подключения — на этом ПК · история — на каждом сервере</span></footer>
-  </div>
-</div>
-<dialog id="environment-dialog"><form id="environment-form"><div class="dialog-heading"><div><p class="eyebrow">ПОДКЛЮЧЕНИЕ СЕРВЕРА</p><h2 id="environment-title">Новое окружение</h2></div><button type="button" class="icon-button" data-close aria-label="Закрыть">×</button></div>
-  <input id="environment-id" type="hidden"><label>Название<input id="environment-name" required maxlength="80" placeholder="Например, Dev"></label><label>Адрес сервера<input id="environment-address" type="url" required placeholder="http://server.local:8770"><small>Адрес API, доступный с этого ПК, без /monitor/.</small></label><label>Ключ мониторинга<input id="environment-key" type="password" autocomplete="off" placeholder="Ключ только для чтения этого сервера"><small>Выдаётся серверной частью CatalogWeaver. Ключ управления не требуется.</small></label>
-  <div class="form-row"><label>Цвет<input id="environment-color" type="color" value="#5dbaa6"></label><label>Опрос, секунд<input id="environment-interval" type="number" min="2" max="300" value="5" required></label></div><label>Описание<textarea id="environment-description" maxlength="500" rows="2"></textarea></label><label class="checkbox"><input id="environment-enabled" type="checkbox" checked> Опрос включён</label>
-  <div class="form-row"><label>Таймаут, секунд<input id="environment-timeout" type="number" min="1" max="60" value="8" required></label><label>Минимум места, ГиБ<input id="environment-minimum" type="number" min="0" step="0.1" value="5" required></label></div><label>Предупреждать без прогресса, минут<input id="environment-stall" type="number" min="1" max="1440" value="15" required></label>
-  <p id="environment-error" class="error" role="alert"></p><div class="dialog-actions"><button type="button" class="small-button" data-close>Отмена</button><button id="save-environment" type="submit" class="primary">Проверить и подключить</button></div>
-</form></dialog>
-<dialog id="detail-dialog"><div class="dialog-heading"><h2 id="detail-title">Задание</h2><button class="icon-button" data-close aria-label="Закрыть">×</button></div><div id="detail-content"></div></dialog>
-<div id="toast" class="toast" role="status" hidden></div>
-</body></html>
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="color-scheme" content="dark" />
+    <title>CatalogWeaver — мониторинг</title>
+    <link rel="stylesheet" href="/monitor/styles.css" />
+    <script src="/monitor/app.js" defer></script>
+  </head>
+  <body>
+    <div id="shell" class="shell">
+      <aside class="sidebar">
+        <a class="brand" href="#">
+          <span class="brand-mark">CW</span>
+          <span>
+            CatalogWeaver
+            <small>LOCAL WEB CLIENT</small>
+          </span>
+        </a>
+        <div class="sidebar-section">
+          <span class="eyebrow">ОКРУЖЕНИЯ</span>
+          <button
+            id="add-environment"
+            class="icon-button"
+            aria-label="Добавить окружение"
+            title="Добавить окружение"
+          >
+            +
+          </button>
+        </div>
+        <button id="all-environments" class="nav-item">
+          ◫
+          <span>Все окружения</span>
+          <span id="environment-count" class="count">1</span>
+        </button>
+        <nav id="environment-list" aria-label="Окружения"></nav>
+        <div class="sidebar-section">
+          <span class="eyebrow">АДАПТЕРЫ</span>
+          <span id="adapter-count" class="count"></span>
+        </div>
+        <nav id="adapter-list" aria-label="Адаптеры"></nav>
+        <div class="sidebar-bottom">
+          <span class="local-indicator">
+            <i class="dot"></i>
+            Клиент на этом ПК
+          </span>
+          <button id="client-info" class="text-button">О клиенте</button>
+        </div>
+      </aside>
+      <div class="workspace">
+        <header class="topbar">
+          <div id="breadcrumbs">Окружения</div>
+          <div class="toolbar">
+            <span id="refresh-state" class="fine" aria-live="polite">Подключение…</span>
+            <button id="refresh" class="small-button">Обновить</button>
+          </div>
+        </header>
+        <main id="main" tabindex="-1"></main>
+        <footer>
+          <span>CatalogWeaver</span>
+          <span>Подключения — на этом ПК · история — на каждом сервере</span>
+        </footer>
+      </div>
+    </div>
+    <dialog id="environment-dialog">
+      <form id="environment-form">
+        <div class="dialog-heading">
+          <div>
+            <p class="eyebrow">ПОДКЛЮЧЕНИЕ СЕРВЕРА</p>
+            <h2 id="environment-title">Новое окружение</h2>
+          </div>
+          <button type="button" class="icon-button" data-close aria-label="Закрыть">×</button>
+        </div>
+        <input id="environment-id" type="hidden" />
+        <label>
+          Название
+          <input id="environment-name" required maxlength="80" placeholder="Например, Dev" />
+        </label>
+        <label>
+          Адрес сервера
+          <input
+            id="environment-address"
+            type="url"
+            required
+            placeholder="http://server.local:8770"
+          />
+          <small>Адрес API, доступный с этого ПК, без /monitor/.</small>
+        </label>
+        <label>
+          Ключ мониторинга
+          <input
+            id="environment-key"
+            type="password"
+            autocomplete="off"
+            placeholder="Ключ только для чтения этого сервера"
+          />
+          <small>Выдаётся серверной частью CatalogWeaver. Ключ управления не требуется.</small>
+        </label>
+        <div class="form-row">
+          <label>
+            Цвет
+            <input id="environment-color" type="color" value="#5dbaa6" />
+          </label>
+          <label>
+            Опрос, секунд
+            <input id="environment-interval" type="number" min="2" max="300" value="5" required />
+          </label>
+        </div>
+        <label>
+          Описание
+          <textarea id="environment-description" maxlength="500" rows="2"></textarea>
+        </label>
+        <label class="checkbox">
+          <input id="environment-enabled" type="checkbox" checked />
+          Опрос включён
+        </label>
+        <div class="form-row">
+          <label>
+            Таймаут, секунд
+            <input id="environment-timeout" type="number" min="1" max="60" value="8" required />
+          </label>
+          <label>
+            Минимум места, ГиБ
+            <input id="environment-minimum" type="number" min="0" step="0.1" value="5" required />
+          </label>
+        </div>
+        <label>
+          Предупреждать без прогресса, минут
+          <input id="environment-stall" type="number" min="1" max="1440" value="15" required />
+        </label>
+        <p id="environment-error" class="error" role="alert"></p>
+        <div class="dialog-actions">
+          <button type="button" class="small-button" data-close>Отмена</button>
+          <button id="save-environment" type="submit" class="primary">
+            Проверить и подключить
+          </button>
+        </div>
+      </form>
+    </dialog>
+    <dialog id="detail-dialog">
+      <div class="dialog-heading">
+        <h2 id="detail-title">Задание</h2>
+        <button class="icon-button" data-close aria-label="Закрыть">×</button>
+      </div>
+      <div id="detail-content"></div>
+    </dialog>
+    <div id="toast" class="toast" role="status" hidden></div>
+  </body>
+</html>
