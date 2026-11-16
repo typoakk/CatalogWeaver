@@ -8,6 +8,7 @@ public sealed record BackgroundLoopStatus(string Name, string State, string Stag
     string? Provider = null, long? ExternalId = null)
 {
     public BackgroundFailure? LastFailure { get; init; }
+    public DateTime StageStartedUtc { get; init; } = DateTime.UtcNow;
 }
 
 public sealed record BackgroundFailure(DateTime Utc, string Stage, ImportErrorInfo Error,
@@ -31,6 +32,7 @@ public sealed class ExecutionDiagnostics
         loops.AddOrUpdate(name, _ => new(name, stage == "idle" ? "idle" : "running", stage, DateTime.UtcNow,
             JobId: jobId, AttemptId: attemptId, Provider: provider, ExternalId: externalId),
             (_, previous) => previous with { State = stage == "idle" ? "idle" : "running", Stage = stage,
+                StageStartedUtc = previous.Stage == stage && previous.JobId == jobId ? previous.StageStartedUtc : DateTime.UtcNow,
                 HeartbeatUtc = DateTime.UtcNow, Error = null, JobId = jobId, AttemptId = attemptId,
                 Provider = provider, ExternalId = externalId });
     }

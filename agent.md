@@ -2,7 +2,7 @@
 
 ## Назначение и границы проекта
 
-CatalogWeaver — самостоятельный headless-сервис .NET 10 для импорта медиакаталогов. Целевой запуск — Linux / Docker Compose. Windows поддерживается для разработки и запуска .NET. GUI отсутствует; управляющий REST API служит основой будущего интерфейса.
+CatalogWeaver — самостоятельный сервис .NET 10 для импорта медиакаталогов. Целевой запуск — Linux / Docker Compose. Windows поддерживается для разработки и запуска .NET. Основной интерфейс мониторинга — отдельный веб-клиент `src/CatalogWeaver.MonitorClient`, запускаемый на ПК; управляющий REST API сохраняется для операций импорта. Мониторинг нескольких окружений описан в `docs/monitoring.md`.
 
 Начни с [README](README.md), [текущей схемы](docs/architecture.puml), [маршрутов API](docs/api.md) и [подключения приложения пользователя](docs/service-integration.md). Для работы с назначением прочитай [database-mapping.md](docs/database-mapping.md); для изображений — [encoders.md](docs/encoders.md).
 
@@ -22,6 +22,8 @@ CatalogWeaver — самостоятельный headless-сервис .NET 10 �
 | `src/MediaImporter/AdapterEngine/AdapterRuntime.cs` | Обход ID, запросы и нормализация карточек/материалов |
 | `src/MediaImporter/ImportOrchestrator.cs` | Общий цикл одной карточки |
 | `src/MediaImporter/Queue` | PostgreSQL-очередь, позиции страниц, аренды, heartbeat, отмена и повторы |
+| `src/MediaImporter/Monitoring` | Только собственные показатели сервера, история и API чтения |
+| `src/CatalogWeaver.MonitorClient` | Веб-клиент на ПК, локальные подключения/ключи и независимый опрос окружений |
 | `src/MediaImporter/Transport` | HTTP и общий устойчивый лимитер |
 | `src/MediaImporter/Images/EncoderModule.cs` | Контракт модулей и разрешённых профилей |
 | `src/MediaImporter/Images/EncoderRegistry.cs` | Автозагрузка модулей, проверка и каталог профилей |
@@ -36,6 +38,8 @@ CatalogWeaver — самостоятельный headless-сервис .NET 10 �
 Имена namespace и solution пока `MediaImporter`; продукт и выходная сборка — `CatalogWeaver`. Не считай папку `dist` частью репозитория или обязательным распространяемым артефактом.
 
 ## Архитектура, которую нужно сохранять
+
+- Мониторинг разделён: сервер каждого окружения отдаёт только свои данные; веб-клиент на ПК независимо опрашивает серверы. Не размещай агрегатор окружений внутри dev/staging/prod. Клиент не требует ImporterDb или ключа управления, только ключи мониторинга подключаемых серверов.
 
 - Один общий оркестратор и инструменты; поведение источника описывается адаптером. Новому источнику не нужен отдельный worker или специальный writer.
 - Служебная PostgreSQL отделена от необязательной PostgreSQL приложения. Таблицами назначения и их миграциями управляет приложение пользователя. Не добавляй DDL цели в `--migrate`.

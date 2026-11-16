@@ -44,6 +44,8 @@ services:
       Importer__WorkersEnabled: ${IMPORTER_WORKERS_ENABLED:-true}
       Importer__MinimumFreeBytes: ${IMPORTER_MINIMUM_FREE_BYTES:-5368709120}
       Importer__Secrets__SteamApiKey: ${STEAM_API_KEY:-}
+      Monitoring__Name: ${MONITORING_NAME:-CatalogWeaver}
+      Monitoring__ApiKey: ${MONITORING_API_KEY:-}
     volumes:
       - configuration:/data/config:ro
     depends_on:
@@ -59,7 +61,7 @@ services:
       - encoders:/app/encoders
       - media:/data/media
     ports:
-      - "127.0.0.1:${IMPORTER_PORT:-8770}:8080"
+      - "${IMPORTER_BIND_IP:-127.0.0.1}:${IMPORTER_PORT:-8770}:8080"
     depends_on:
       state:
         condition: service_healthy

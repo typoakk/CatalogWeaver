@@ -7,12 +7,13 @@ using System.Text.RegularExpressions;
 
 namespace MediaImporter;
 
-public sealed class AdapterTransport(HttpClient http, IProviderRateLimiter limiter, IConfiguration configuration)
+public sealed class AdapterTransport(HttpClient http, IProviderRateLimiter limiter, IConfiguration configuration,
+    MediaImporter.Monitoring.MonitoringTelemetry? telemetry = null)
 {
     private static readonly Regex Variables = new(@"\{\{([A-Za-z][A-Za-z0-9_:.-]*)(?:\|(upper|lower))?\}\}", RegexOptions.CultureInvariant, TimeSpan.FromSeconds(1));
 
     public async Task<JsonElement> ReadJsonAsync(AdapterSnapshot snapshot, RequestDefinition request,
-        IReadOnlyDictionary<string, string> variables, CancellationToken ct)
+        IReadOnlyDictionary<string, string> variables, CancellationToken ct, string category = "metadata")
     {
         var origin = request.BaseUrl ?? snapshot.Definition.BaseUrl;
         var path = Expand(request.Path, variables, true);
@@ -30,7 +31,7 @@ public sealed class AdapterTransport(HttpClient http, IProviderRateLimiter limit
             if (!message.Headers.TryAddWithoutValidation(name, Expand(value, variables, true))) throw new AdapterReadException("invalid_header", false);
         if (request.Body is { } body)
             message.Content = new StringContent(ExpandJson(body, variables).ToJsonString(), Encoding.UTF8, "application/json");
-        var bytes = await SendAsync(snapshot, message, request.MaximumResponseBytes, ct);
+        var bytes = await SendAsync(snapshot, message, request.MaximumResponseBytes, ct, category);
         try
         {
             using var document = JsonDocument.Parse(bytes, new JsonDocumentOptions { MaxDepth = 48 });
@@ -77,14 +78,16 @@ public sealed class AdapterTransport(HttpClient http, IProviderRateLimiter limit
             throw new AdapterReadException("url_host_rejected", false);
     }
 
-    private async Task<byte[]> SendAsync(AdapterSnapshot snapshot, HttpRequestMessage message, int maximumBytes, CancellationToken ct)
+    private async Task<byte[]> SendAsync(AdapterSnapshot snapshot, HttpRequestMessage message, int maximumBytes, CancellationToken ct, string? category = null)
     {
         await using var lease = await limiter.AcquireAsync(snapshot.Provider, snapshot.Definition.RateLimit, ct);
+        using var measurement = telemetry?.Start(snapshot.Provider, message, category);
         using var timeout = CancellationTokenSource.CreateLinkedTokenSource(ct);
         timeout.CancelAfter(TimeSpan.FromSeconds(Math.Clamp(configuration.GetValue("Importer:RequestTimeoutSeconds", 45), 1, 300)));
         try
         {
             using var response = await http.SendAsync(message, HttpCompletionOption.ResponseHeadersRead, timeout.Token);
+            measurement?.Headers(response);
             var delay = response.Headers.RetryAfter?.Delta
                 ?? (response.Headers.RetryAfter?.Date is { } date ? date - DateTimeOffset.UtcNow : (TimeSpan?)null);
             if (delay is { } advised && advised > TimeSpan.Zero) await lease.DeferAsync(advised, ct);
@@ -103,15 +106,17 @@ public sealed class AdapterTransport(HttpClient http, IProviderRateLimiter limit
             while (true)
             {
                 var count = await body.ReadAsync(buffer, timeout.Token);
+                measurement?.Read(count);
                 if (count == 0) break;
                 if (output.Length + count > maximumBytes) throw new AdapterReadException("response_too_large", true);
                 await output.WriteAsync(buffer.AsMemory(0, count), timeout.Token);
             }
             return output.ToArray();
         }
-        catch (OperationCanceledException) when (!ct.IsCancellationRequested) { throw new AdapterReadException("request_timeout", true); }
-        catch (HttpRequestException) { throw new AdapterReadException("transport_error", true); }
-        catch (IOException) { throw new AdapterReadException("response_read_error", true); }
+        catch (OperationCanceledException) when (!ct.IsCancellationRequested) { var error = new AdapterReadException("request_timeout", true); measurement?.Fail(error); throw error; }
+        catch (HttpRequestException) { var error = new AdapterReadException("transport_error", true); measurement?.Fail(error); throw error; }
+        catch (IOException) { var error = new AdapterReadException("response_read_error", true); measurement?.Fail(error); throw error; }
+        catch (Exception error) { measurement?.Fail(error); throw; }
     }
 
     private string QueryValue(JsonElement value, IReadOnlyDictionary<string, string> variables)

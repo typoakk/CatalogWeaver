@@ -27,7 +27,7 @@ public sealed class AdapterRuntime(AdapterTransport transport)
         }
         else variables["cursor"] = cursor ?? "0";
         var request = definition.Requests[discovery.Request];
-        var root = await ReadRequestAsync(snapshot, request, variables, [], ct);
+        var root = await ReadRequestAsync(snapshot, request, variables, [], ct, "discovery");
         var nodes = AdapterJsonPath.Select(root, discovery.ItemsPath)
             .SelectMany(value => value.ValueKind == JsonValueKind.Array ? value.EnumerateArray().ToArray() : [value]);
         var items = new List<DiscoveryEntry>();
@@ -159,14 +159,14 @@ public sealed class AdapterRuntime(AdapterTransport transport)
     }
 
     private async Task<JsonElement> ReadRequestAsync(AdapterSnapshot snapshot, RequestDefinition request,
-        Dictionary<string, string> variables, List<string> warnings, CancellationToken ct)
+        Dictionary<string, string> variables, List<string> warnings, CancellationToken ct, string category = "metadata")
     {
         var alternative = request.AlternativeVariables.FirstOrDefault();
         var values = alternative.Value ?? [""];
         foreach (var value in values)
         {
             if (alternative.Key is not null) variables[alternative.Key] = value;
-            var raw = await transport.ReadJsonAsync(snapshot, request, variables, ct);
+            var raw = await transport.ReadJsonAsync(snapshot, request, variables, ct, category);
             if (request.GraphQl && raw.ValueKind == JsonValueKind.Object && raw.TryGetProperty("errors", out var errors)
                 && errors.ValueKind != JsonValueKind.Null && (errors.ValueKind != JsonValueKind.Array || errors.GetArrayLength() > 0))
                 throw new AdapterReadException("graphql_error", true);

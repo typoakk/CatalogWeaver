@@ -15,6 +15,7 @@
   </ItemGroup>
   <ItemGroup>
     <ProjectReference Include="../../src/MediaImporter/MediaImporter.csproj" />
+    <ProjectReference Include="../../src/CatalogWeaver.MonitorClient/CatalogWeaver.MonitorClient.csproj" />
   </ItemGroup>
   <ItemGroup>
     <Using Include="Xunit" />

@@ -1,5 +1,7 @@
 # Управляющий API
 
+Основной интерфейс наблюдения — `/monitor/` отдельного клиента на ПК. Отдельный API мониторинга `/api/v1/monitor/*` использует ключ только чтения и описан в [monitoring.md](monitoring.md). Управляющие маршруты ниже сохраняют прежнюю авторизацию.
+
 Базовый путь: `/api/v1/importer`. Все маршруты в таблицах требуют `Authorization: Bearer <Importer:ApiKey>`. В Compose ключ создаётся автоматически в томе `configuration`, файл `/data/config/api-key`. Получить его: `docker compose exec importer cat /data/config/api-key`. При запуске из исходников можно задать `Importer__ApiKey` или `Importer__ApiKeyFile`. API предназначен для консольных клиентов и будущего GUI.
 
 `GET /health/live` и `GET /health/ready` находятся вне базового пути и работают без ключа. Стандартный Compose публикует API только на `127.0.0.1:8770` хоста.

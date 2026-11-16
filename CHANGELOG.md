@@ -1,5 +1,12 @@
 # Changes
 
+## Unreleased
+
+- Add a standalone PC web client with local server profiles, automatic adapter navigation and job details; importer servers expose only their own monitoring data.
+- Persist distinct first-import/refresh rates over 1/5/15 minutes, server identity and 30-day chart history.
+- Measure HTTP bodies, latency and errors; expose limiter budgets, image profiles, storage and process resources.
+- Protect read-only server monitoring APIs; store client profiles on the PC and protect their keys with Windows DPAPI. The client opens without a server-management login.
+
 ## 0.2.0
 
 - Recover background discovery after database failures and report individual loop health.

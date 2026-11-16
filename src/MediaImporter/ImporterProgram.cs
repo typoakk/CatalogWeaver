@@ -4,6 +4,7 @@ using System.Text.Json;
 using MediaImporter.Images;
 using Npgsql;
 using MediaImporter.Database;
+using MediaImporter.Monitoring;
 
 namespace MediaImporter;
 
@@ -37,16 +38,19 @@ public sealed class ImporterProgram
                   Importer__EncodersPath          Hot-loaded image encoder module directory
                   Importer__MediaRoot             Downloaded media root
 
-                See README.md and docs/database-mapping.md. No graphical interface is included.
+                Read-only monitoring API: /api/v1/monitor. Run the web client on your PC.
+                CatalogWeaver --monitor-key                  Read this server's monitoring key (explicit secret output)
+                See docs/monitoring.md.
                 """);
             return;
         }
         var migrate = args.Contains("--migrate", StringComparer.Ordinal);
         var bootstrap = args.Contains("--bootstrap", StringComparer.Ordinal);
+        var monitorKey = args.Contains("--monitor-key", StringComparer.Ordinal);
         var inspectIndex = Array.IndexOf(args, "--inspect-db");
         var inspectName = inspectIndex < 0 ? null : inspectIndex + 1 < args.Length
             ? args[inspectIndex + 1] : throw new ArgumentException("Supply a configured connection name after --inspect-db.");
-        var builder = WebApplication.CreateBuilder(args.Where((value, index) => value is not ("--migrate" or "--bootstrap")
+        var builder = WebApplication.CreateBuilder(args.Where((value, index) => value is not ("--migrate" or "--bootstrap" or "--monitor-key")
             && index != inspectIndex && (inspectIndex < 0 || index != inspectIndex + 1)).ToArray());
         var configuration = builder.Configuration;
         if (bootstrap)
@@ -63,6 +67,16 @@ public sealed class ImporterProgram
             return;
         }
         ServiceBootstrap.ApplySecretFiles(configuration);
+        if (configuration["Monitoring:ApiKey"] is { Length: > 0 } monitoringKey
+            && (monitoringKey.Length is < 32 or > 4096 || monitoringKey.Contains('\r') || monitoringKey.Contains('\n')))
+            throw new InvalidOperationException("Monitoring:ApiKey must contain 32–4096 characters without line breaks.");
+        if (monitorKey)
+        {
+            var key = configuration["Importer:ApiKey"] ?? "";
+            if (key.Length < 32) throw new InvalidOperationException("Configure the management key before reading the monitoring key.");
+            Console.WriteLine(new MonitoringAccess(new ImporterOptions { ApiKey = key }, configuration).ReadKey);
+            return;
+        }
         var connection = configuration.GetConnectionString("ImporterDb")
             ?? throw new InvalidOperationException("Set ConnectionStrings:ImporterDb for the importer state database.");
         if (string.IsNullOrWhiteSpace(connection)) throw new InvalidOperationException("ConnectionStrings:ImporterDb must not be empty.");
@@ -101,6 +115,7 @@ public sealed class ImporterProgram
         builder.Services.AddSingleton<IImporterImageCodec, ProcessImageCodec>();
         builder.Services.AddSingleton<PreviewExecutor>();
         builder.Services.AddSingleton<ExecutionDiagnostics>();
+        builder.Services.AddMonitoring();
         builder.Services.AddSingleton<ImagePipeline>();
         builder.Services.AddHostedService<ImageHousekeepingService>();
         builder.Services.AddScoped<StandalonePersistence>();
@@ -117,16 +132,19 @@ public sealed class ImporterProgram
             {
                 await StandaloneSchema.InitializeAsync(app.Services.GetRequiredService<NpgsqlDataSource>(), CancellationToken.None);
                 await jobs.InitializeAsync(PostgresProviderRateLimiter.SchemaSql, CancellationToken.None);
+                await MonitoringSchema.InitializeAsync(app.Services.GetRequiredService<NpgsqlDataSource>(), CancellationToken.None);
                 app.Logger.LogInformation("Importer database schema is ready.");
                 return;
             }
             if (!await jobs.IsReadyAsync(CancellationToken.None)
+                || !await app.Services.GetRequiredService<MonitoringStore>().IsReadyAsync(CancellationToken.None)
                 || !await StandaloneSchema.IsReadyAsync(app.Services.GetRequiredService<NpgsqlDataSource>(), CancellationToken.None))
                 throw new InvalidOperationException("Apply importer migrations with --migrate before starting the service.");
         }
         await app.Services.GetRequiredService<EncoderRegistry>().ReloadAsync();
         await app.Services.GetRequiredService<AdapterRegistry>().ReloadAsync();
         MapEndpoints(app, options);
+        app.MapMonitoring();
         await app.RunAsync();
     }
 

@@ -11,13 +11,21 @@ skinparam componentBorderColor #486581
 skinparam ArrowColor #486581
 skinparam noteBackgroundColor #FFF6D8
 
-actor "Пользователь / клиент\nБудущий GUI" as Client
+actor "Администратор / API-клиент" as Client
+actor "Пользователь мониторинга" as MonitorUser
+package "ПК пользователя" {
+  component "Браузер / веб-интерфейс" as MonitorWeb
+  component "CatalogWeaver.MonitorClient\nНезависимый опрос окружений" as MonitorClient
+  folder "Локальные подключения\nКлючи Windows DPAPI" as MonitorProfiles
+}
+component "API мониторинга других окружений" as OtherMonitoring
 folder "adapters/{provider}/adapter.json\nПолучение · mapping · политики · назначения" as Adapters
 folder "encoders/{module}/encoder.json\nФормат · качество · defines" as Encoders
 cloud "API источников и CDN" as Sources
 
 package "CatalogWeaver / Linux Docker" {
   component "Bootstrap → PostgreSQL → миграции\nАвтоматический первый запуск" as Bootstrap
+  component "API собственных показателей\nGET /api/v1/monitor/*" as MonitoringAPI
   component "Управляющий REST API\nПроверка · настройка · запуск" as API
   component "Бюджет preview\nОбщий предел и полный таймаут" as Preview
   component "Реестр адаптеров\nПроверка и версия JSON" as Registry
@@ -38,6 +46,12 @@ database "Необязательная существующая\nPostgreSQL пр
 folder "MediaRoot/{directory}/{SHA-256}\nВыбранные файлы" as Media
 component "Приложение пользователя\nили файловый сервер" as Application
 
+MonitorUser --> MonitorWeb
+MonitorWeb --> MonitorClient : localhost
+MonitorClient --> MonitoringAPI : ключ мониторинга этого сервера
+MonitorClient --> OtherMonitoring : отдельный ключ каждого сервера
+MonitorClient --> MonitorProfiles
+MonitoringAPI --> State : собственная история и состояние
 Client --> API
 Bootstrap --> Settings : создать секреты один раз
 Bootstrap --> State : запустить и применить служебную схему
