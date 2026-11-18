@@ -8,7 +8,7 @@ namespace CatalogWeaver.MonitorClient;
 public sealed record ServerState(JsonObject? Data,DateTime CheckedUtc,DateTime? SuccessUtc,string? Error);
 
 /// <summary>Runs on the user's PC. Each server is polled independently using its own read key.</summary>
-public sealed class ServerConnections(ConnectionRegistry registry,IHttpClientFactory clients) : BackgroundService
+public sealed class ServerConnections(ConnectionRegistry registry,IHttpClientFactory clients,SshTransport sshTransport) : BackgroundService
 {
     private readonly ConcurrentDictionary<Guid,ServerState> states = new();
     private readonly ConcurrentDictionary<Guid,Poll> polls = new();
@@ -30,15 +30,19 @@ public sealed class ServerConnections(ConnectionRegistry registry,IHttpClientFac
         catch(InvalidOperationException) { }
         throw new ClientConnectionException("monitor_incompatible_schema");
     }
-    public async Task<JsonNode> FetchAsync(string address,string key,string route,int timeoutSeconds,CancellationToken ct)
+    public async Task<JsonNode> FetchAsync(string? address,SshTarget? ssh,string key,string route,int timeoutSeconds,CancellationToken ct)
     {
-        using var request = new HttpRequestMessage(HttpMethod.Get,new Uri(ConnectionRegistry.Address(address),"api/v1/monitor/"+route));
+        var path = "api/v1/monitor/" + route;
+        using var request = ssh is null
+            ? new HttpRequestMessage(HttpMethod.Get,new Uri(ConnectionRegistry.Address(address),path))
+            : SshTransport.Request(ssh, path);
         request.Headers.Authorization = new AuthenticationHeaderValue("Bearer",key);
         using var timeout = CancellationTokenSource.CreateLinkedTokenSource(ct);
         timeout.CancelAfter(TimeSpan.FromSeconds(Math.Clamp(timeoutSeconds,1,60)));
         try
         {
-            using var response = await clients.CreateClient("monitoring-sources").SendAsync(request,HttpCompletionOption.ResponseHeadersRead,timeout.Token);
+            using var response = await (ssh is null ? clients.CreateClient("monitoring-sources") : sshTransport.Client)
+                .SendAsync(request,HttpCompletionOption.ResponseHeadersRead,timeout.Token);
             if(!response.IsSuccessStatusCode) throw new ClientConnectionException(response.StatusCode==System.Net.HttpStatusCode.Unauthorized
                 ? "monitor_key_rejected" : "monitor_http_"+(int)response.StatusCode);
             await using var stream = await response.Content.ReadAsStreamAsync(timeout.Token);
@@ -53,8 +57,9 @@ public sealed class ServerConnections(ConnectionRegistry registry,IHttpClientFac
                 ?? throw new ClientConnectionException("monitor_invalid_response");
         }
         catch(OperationCanceledException) when(!ct.IsCancellationRequested){throw new ClientConnectionException("monitor_timeout");}
-        catch(HttpRequestException){throw new ClientConnectionException("monitor_unreachable");}
-        catch(IOException){throw new ClientConnectionException("monitor_unreachable");}
+        catch(HttpRequestException error) when(error.InnerException is ClientConnectionException sshError){throw sshError;}
+        catch(HttpRequestException){throw new ClientConnectionException(ssh is null ? "monitor_unreachable" : "monitor_ssh_failed");}
+        catch(IOException){throw new ClientConnectionException(ssh is null ? "monitor_unreachable" : "monitor_ssh_failed");}
         catch(JsonException){throw new ClientConnectionException("monitor_invalid_response");}
     }
     public Task PollAsync(CancellationToken ct)
@@ -75,7 +80,7 @@ public sealed class ServerConnections(ConnectionRegistry registry,IHttpClientFac
         var previous=State(connection.Id);var ct=poll.Cancellation.Token;
         try
         {
-            var data=await FetchAsync(connection.Address,registry.Key(connection),"snapshot",connection.TimeoutSeconds,ct);
+            var data=await FetchAsync(connection.Address,connection.Ssh,registry.Key(connection),"snapshot",connection.TimeoutSeconds,ct);
             if(ValidateSnapshot(data)!=connection.ServerId)throw new ClientConnectionException("monitor_server_identity_changed");
             if(!ct.IsCancellationRequested && revisions.GetValueOrDefault(connection.Id)==revision)
                 states[connection.Id]=new(data.AsObject(),DateTime.UtcNow,DateTime.UtcNow,null);
@@ -97,9 +102,9 @@ public sealed class ServerConnections(ConnectionRegistry registry,IHttpClientFac
         var connection=registry.Get(id);
         if(!connection.Enabled)throw new ClientConnectionException("environment_disabled");
         var key=registry.Key(connection);
-        var snapshot=await FetchAsync(connection.Address,key,"snapshot",connection.TimeoutSeconds,ct);
+        var snapshot=await FetchAsync(connection.Address,connection.Ssh,key,"snapshot",connection.TimeoutSeconds,ct);
         if(ValidateSnapshot(snapshot)!=connection.ServerId)throw new ClientConnectionException("monitor_server_identity_changed");
-        return await FetchAsync(connection.Address,key,route,connection.TimeoutSeconds,ct);
+        return await FetchAsync(connection.Address,connection.Ssh,key,route,connection.TimeoutSeconds,ct);
     }
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {

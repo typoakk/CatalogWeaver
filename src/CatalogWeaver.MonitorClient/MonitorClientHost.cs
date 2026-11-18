@@ -42,7 +42,7 @@ public static class MonitorClientHost
         var protection=services.AddDataProtection().SetApplicationName("CatalogWeaver.MonitorClient")
             .PersistKeysToFileSystem(new DirectoryInfo(keyRoot));
         if(OperatingSystem.IsWindows())protection.ProtectKeysWithDpapi();
-        services.AddSingleton<ConnectionRegistry>();services.AddSingleton<ServerConnections>();
+        services.AddSingleton<ConnectionRegistry>();services.AddSingleton<SshTransport>();services.AddSingleton<ServerConnections>();
         services.AddHostedService(s=>s.GetRequiredService<ServerConnections>());
         services.AddHttpClient("monitoring-sources",client=>client.Timeout=Timeout.InfiniteTimeSpan).RemoveAllLoggers()
             .ConfigurePrimaryHttpMessageHandler(()=>new SocketsHttpHandler{AllowAutoRedirect=false,UseProxy=false,
@@ -92,7 +92,7 @@ public static class MonitorClientHost
         {
             var status=connections.State(environment.Id);
             return new{environment.Id,environment.Name,environment.Address,environment.ServerId,environment.Color,environment.Description,
-                environment.IntervalSeconds,environment.Enabled,environment.TimeoutSeconds,environment.MinimumFreeBytes,environment.NoProgressMinutes,
+                environment.IntervalSeconds,environment.Enabled,environment.TimeoutSeconds,environment.MinimumFreeBytes,environment.NoProgressMinutes,environment.Ssh,
                 data=status?.Data,error=status?.Error,checkedUtc=status?.CheckedUtc,successUtc=status?.SuccessUtc};
         })));
         async Task<IResult> Save(Guid? id,EnvironmentInput input,CancellationToken ct)
@@ -103,8 +103,12 @@ public static class MonitorClientHost
             if(string.IsNullOrWhiteSpace(key)||key.Length is <32 or >4096||key.Contains('\r')||key.Contains('\n'))
                 return Results.BadRequest(new{error="invalid_monitor_key"});
             Guid serverId;
-            if(!input.Enabled&&existing is not null&&ConnectionRegistry.Address(input.Address).AbsoluteUri==existing.Address&&string.IsNullOrEmpty(input.Key))serverId=existing.ServerId;
-            else serverId=ServerConnections.ValidateSnapshot(await connections.FetchAsync(input.Address,key,"snapshot",input.TimeoutSeconds,ct));
+            var address = input.Ssh is null ? ConnectionRegistry.Address(input.Address).AbsoluteUri : null;
+            if (!input.Enabled && existing is not null && address == existing.Address
+                && input.Ssh == existing.Ssh && string.IsNullOrEmpty(input.Key))
+                serverId = existing.ServerId;
+            else
+                serverId = ServerConnections.ValidateSnapshot(await connections.FetchAsync(address,input.Ssh,key,"snapshot",input.TimeoutSeconds,ct));
             var guid=id??Guid.NewGuid();
             await registry.SaveAsync(guid,input,serverId,key,id is null,ct);connections.Forget(guid);
             return Results.Ok(new{id=guid});

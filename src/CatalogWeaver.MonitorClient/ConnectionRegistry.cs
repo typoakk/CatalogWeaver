@@ -4,11 +4,13 @@ using Microsoft.AspNetCore.DataProtection;
 
 namespace CatalogWeaver.MonitorClient;
 
-public sealed record EnvironmentInput(string Name, string Address, string? Key, string Color = "#5dbaa6",
+public sealed record SshTarget(string Host, int ApiPort = 8770);
+public sealed record EnvironmentInput(string Name, string? Address, string? Key, string Color = "#5dbaa6",
     string Description = "", int IntervalSeconds = 5, bool Enabled = true, int TimeoutSeconds = 8,
-    long MinimumFreeBytes = 5368709120, int NoProgressMinutes = 15);
-public sealed record EnvironmentConnection(Guid Id, string Name, string Address, string ProtectedKey, Guid ServerId,
-    string Color, string Description, int IntervalSeconds, bool Enabled, int TimeoutSeconds, long MinimumFreeBytes, int NoProgressMinutes);
+    long MinimumFreeBytes = 5368709120, int NoProgressMinutes = 15, SshTarget? Ssh = null);
+public sealed record EnvironmentConnection(Guid Id, string Name, string? Address, string ProtectedKey, Guid ServerId,
+    string Color, string Description, int IntervalSeconds, bool Enabled, int TimeoutSeconds, long MinimumFreeBytes,
+    int NoProgressMinutes, SshTarget? Ssh = null);
 
 /// <summary>PC-local profiles. Source credentials never belong to an importer server.</summary>
 public sealed class ConnectionRegistry : IDisposable
@@ -44,7 +46,7 @@ public sealed class ConnectionRegistry : IDisposable
                 if (rows.Length > 100 || rows.Select(x => x.Id).Distinct().Count() != rows.Length
                     || rows.Select(x => x.ServerId).Distinct().Count() != rows.Length) throw new InvalidDataException();
                 foreach (var row in rows) Validate(new(row.Name,row.Address,null,row.Color,row.Description,row.IntervalSeconds,row.Enabled,
-                    row.TimeoutSeconds,row.MinimumFreeBytes,row.NoProgressMinutes));
+                    row.TimeoutSeconds,row.MinimumFreeBytes,row.NoProgressMinutes,row.Ssh));
             }
             catch { processLock.Dispose(); throw new InvalidDataException("Client settings cannot be loaded. Existing files were preserved."); }
         }
@@ -52,7 +54,7 @@ public sealed class ConnectionRegistry : IDisposable
     public EnvironmentConnection[] List() => Volatile.Read(ref rows).ToArray();
     public EnvironmentConnection Get(Guid id) => List().SingleOrDefault(x => x.Id == id) ?? throw new KeyNotFoundException();
     public string Key(EnvironmentConnection connection) => protector.Unprotect(connection.ProtectedKey);
-    public static Uri Address(string value)
+    public static Uri Address(string? value)
     {
         if (string.IsNullOrWhiteSpace(value) || !Uri.TryCreate(value.Trim().TrimEnd('/') + "/", UriKind.Absolute, out var uri)
             || uri.Scheme is not ("http" or "https") || uri.UserInfo.Length > 0 || uri.Query.Length > 0
@@ -62,7 +64,16 @@ public sealed class ConnectionRegistry : IDisposable
     }
     public static void Validate(EnvironmentInput input)
     {
-        _ = Address(input.Address);
+        if (input.Ssh is null)
+        {
+            _ = Address(input.Address);
+        }
+        else if (!string.IsNullOrWhiteSpace(input.Address) || input.Ssh.ApiPort is < 1 or > 65535
+            || input.Ssh.Host is not { Length: > 0 and <= 255 }
+            || !Regex.IsMatch(input.Ssh.Host, @"\A[a-zA-Z0-9][a-zA-Z0-9_.-]*(?:@[a-zA-Z0-9][a-zA-Z0-9_.-]*)?\z"))
+        {
+            throw new ArgumentException("Use an SSH host alias or user@host and a valid API port.");
+        }
         if (string.IsNullOrWhiteSpace(input.Name) || input.Name.Length > 80 || input.Description is null || input.Description.Length > 500
             || input.IntervalSeconds is < 2 or > 300 || input.TimeoutSeconds is < 1 or > 60 || input.MinimumFreeBytes is < 0 or > 1_125_899_906_842_624
             || input.NoProgressMinutes is < 1 or > 1440 || input.Color is null || !Regex.IsMatch(input.Color, "^#[0-9a-fA-F]{6}$"))
@@ -81,9 +92,10 @@ public sealed class ConnectionRegistry : IDisposable
             if (existing is not null && existing.ServerId != serverId) throw new ClientConnectionException("server_identity_changed");
             if (current.Any(x => x.Id != id && x.ServerId == serverId)) throw new ClientConnectionException("server_already_connected");
             if (create && current.Length >= 100) throw new ArgumentException("At most 100 connections are supported.");
-            var updated = current.Where(x => x.Id != id).Append(new EnvironmentConnection(id,input.Name.Trim(),Address(input.Address).AbsoluteUri,
+            var address = input.Ssh is null ? Address(input.Address).AbsoluteUri : null;
+            var updated = current.Where(x => x.Id != id).Append(new EnvironmentConnection(id,input.Name.Trim(),address,
                 protector.Protect(key),serverId,input.Color,input.Description,input.IntervalSeconds,input.Enabled,input.TimeoutSeconds,
-                input.MinimumFreeBytes,input.NoProgressMinutes)).OrderBy(x => x.Name,StringComparer.OrdinalIgnoreCase).ToArray();
+                input.MinimumFreeBytes,input.NoProgressMinutes,input.Ssh)).OrderBy(x => x.Name,StringComparer.OrdinalIgnoreCase).ToArray();
             await PersistAsync(updated,ct);
         }
         finally { writer.Release(); }

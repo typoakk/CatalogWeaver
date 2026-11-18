@@ -41,10 +41,10 @@ docker compose exec importer curl -fsS http://127.0.0.1:8080/health/ready
 
 ```powershell
 dotnet publish src/CatalogWeaver.MonitorClient/CatalogWeaver.MonitorClient.csproj -c Release -r win-x64 --self-contained true -p:PublishSingleFile=true -o .local/monitor-client
-./tools/Open-Monitor.ps1
+& ./.local/monitor-client/CatalogWeaver.MonitorClient.exe
 ```
 
-Лаунчер запускает клиент на ПК и открывает `http://127.0.0.1:8870/monitor/`. Можно также запустить собранный `CatalogWeaver.MonitorClient.exe` двойным щелчком. В интерфейсе нажмите «Добавить окружение», укажите адрес нужного сервера и его ключ **мониторинга**. Получить этот ключ на сервере: `docker compose exec importer dotnet CatalogWeaver.dll --monitor-key`.
+Клиент открывает `http://127.0.0.1:8870/monitor/`. Собранный `CatalogWeaver.MonitorClient.exe` можно запустить двойным щелчком. В интерфейсе нажмите «Добавить окружение», выберите прямой HTTP(S)-адрес или SSH и укажите ключ **мониторинга**. В режиме SSH клиент восстанавливает подключения при запуске и после обрыва, используя настройки OpenSSH на этом ПК. Получить этот ключ на сервере: `docker compose exec importer dotnet CatalogWeaver.dll --monitor-key`.
 
 Все ресурсы поставляются вместе с клиентом; интернет и облачная авторизация ему не нужны. Подключения и защищённые Windows DPAPI ключи сохраняются на ПК, история — на каждом сервере. [Устройство и настройка мониторинга](docs/monitoring.md).
 

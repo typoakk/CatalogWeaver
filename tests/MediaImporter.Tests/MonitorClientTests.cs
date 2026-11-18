@@ -26,6 +26,50 @@ public sealed class MonitorClientTests
     public void Connections_require_an_explicit_origin(string address)
         =>Assert.Throws<ArgumentException>(()=>ConnectionRegistry.Address(address));
 
+    [Theory]
+    [InlineData("-oProxyCommand=example", 8770, null)]
+    [InlineData("host\n", 8770, null)]
+    [InlineData("user@host another-host", 8770, null)]
+    [InlineData("catalog-host", 0, null)]
+    [InlineData("catalog-host", 65536, null)]
+    [InlineData("catalog-host", 8770, "http://server.test")]
+    public void Ssh_profiles_require_a_single_valid_destination(string host, int port, string? address)
+        => Assert.Throws<ArgumentException>(() => ConnectionRegistry.Validate(
+            new EnvironmentInput("Dev", address, ReadKey, Ssh: new(host, port))));
+
+    [Fact]
+    public async Task Ssh_profiles_survive_restart_and_can_be_paused_without_a_working_connection()
+    {
+        var root = Path.Combine(Path.GetTempPath(), "cw-client-ssh-" + Guid.NewGuid().ToString("N"));
+        var input = new EnvironmentInput("Dev", null, ReadKey, Ssh: new("catalog-host", 9876));
+        var id = Guid.NewGuid();
+        var serverId = Guid.NewGuid();
+        try
+        {
+            await using (var first = await Fixture.CreateAsync(root))
+                await first.Registry.SaveAsync(id, input, serverId, ReadKey, true, default);
+
+            await using var second = await Fixture.CreateAsync(root);
+            var paused = await second.Client.PutAsJsonAsync($"/monitor/api/environments/{id}",
+                input with { Key = null, Enabled = false });
+            paused.EnsureSuccessStatusCode();
+
+            var saved = second.Registry.Get(id);
+            Assert.Equal(serverId, saved.ServerId);
+            Assert.Equal(input.Ssh, saved.Ssh);
+            Assert.Equal(ReadKey, second.Registry.Key(saved));
+            Assert.False(saved.Enabled);
+
+            var response = await second.Client.GetStringAsync("/monitor/api/environments");
+            Assert.Contains("catalog-host", response);
+            Assert.DoesNotContain(ReadKey, response);
+        }
+        finally
+        {
+            Directory.Delete(root, true);
+        }
+    }
+
     [Fact]
     public async Task Local_client_starts_empty_without_a_server_login_and_protects_its_local_api()
     {

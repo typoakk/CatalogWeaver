@@ -78,6 +78,13 @@
           <input id="environment-name" required maxlength="80" placeholder="Например, Dev" />
         </label>
         <label>
+          Способ подключения
+          <select id="environment-transport">
+            <option value="http">По адресу HTTP(S)</option>
+            <option value="ssh">Через SSH</option>
+          </select>
+        </label>
+        <label id="environment-address-fields">
           Адрес сервера
           <input
             id="environment-address"
@@ -87,6 +94,31 @@
           />
           <small>Адрес API, доступный с этого ПК, без /monitor/.</small>
         </label>
+        <div id="environment-ssh-fields" hidden>
+          <label>
+            SSH-хост
+            <input
+              id="environment-ssh-host"
+              maxlength="255"
+              placeholder="catalogweaver-dev или user@server"
+              required
+              disabled
+            />
+            <small>Нужен вход через OpenSSH с этого ПК без интерактивных запросов.</small>
+          </label>
+          <label>
+            Порт API на SSH-сервере
+            <input
+              id="environment-ssh-port"
+              type="number"
+              min="1"
+              max="65535"
+              value="8770"
+              required
+              disabled
+            />
+          </label>
+        </div>
         <label>
           Ключ мониторинга
           <input

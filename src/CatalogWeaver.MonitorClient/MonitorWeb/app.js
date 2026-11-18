@@ -103,6 +103,22 @@ function toast(message) {
   clearTimeout(toastTimer);
   toastTimer = setTimeout(() => ($('toast').hidden = true), 6000);
 }
+const connectionErrors = {
+  server_already_connected: 'Этот сервер уже подключён.',
+  server_identity_changed: 'По этому адресу другой сервер. Добавьте его отдельным окружением.',
+  invalid_fields: 'Проверьте параметры подключения.',
+  invalid_monitor_key: 'Нужен ключ мониторинга сервера.',
+  monitor_key_rejected: 'Сервер отклонил ключ мониторинга.',
+  monitor_unreachable:
+    'С этого ПК не удалось подключиться к серверу. Проверьте адрес или SSH-туннель.',
+  monitor_ssh_unavailable: 'Не удалось запустить OpenSSH. Проверьте установку SSH-клиента.',
+  monitor_ssh_failed:
+    'Не удалось получить ответ через SSH. Проверьте вход по SSH и порт API на сервере.',
+  monitor_timeout: 'Сервер не ответил за отведённое время.',
+  monitor_incompatible_schema: 'Версия сервера не поддерживает этот формат мониторинга.',
+  monitor_server_identity_changed: 'По этому адресу другой сервер. Добавьте его отдельным окружением.',
+};
+
 async function api(path, options = {}) {
   const response = await fetch('/monitor/api' + path, {
     cache: 'no-store',
@@ -118,22 +134,8 @@ async function api(path, options = {}) {
     try {
       data = await response.json();
     } catch {}
-    const messages = {
-      server_already_connected: 'Этот сервер уже подключён.',
-      server_identity_changed: 'По этому адресу другой сервер. Добавьте его отдельным окружением.',
-      connection_failed: 'Не удалось подключиться. Проверьте адрес и ключ.',
-      invalid_monitor_key: 'Нужен ключ мониторинга сервера.',
-      monitor_key_rejected:
-        'Сервер отклонил ключ. Используй его ключ мониторинга, а не ключ управления.',
-      monitor_unreachable:
-        'С этого ПК не удалось подключиться к серверу. Проверь адрес или SSH-туннель.',
-      monitor_timeout: 'Сервер не ответил за отведённое время.',
-      monitor_incompatible_schema: 'Версия сервера не поддерживает этот формат мониторинга.',
-      monitor_server_identity_changed:
-        'По этому адресу другой сервер. Добавь его отдельным окружением.',
-    };
     throw new Error(
-      messages[data.error] || data.message || `Запрос не выполнен (HTTP ${response.status}).`
+      connectionErrors[data.error] || data.message || `Запрос не выполнен (HTTP ${response.status}).`
     );
   }
   return response.status === 204 ? null : response.json();
@@ -288,7 +290,7 @@ function overviewAll() {
       const data = env.data,
         summary = aggregate(data?.adapters || []),
         s = summary.states;
-      return `<section class="environment-card" style="border-top-color:${h(env.color)}"><div class="panel-header"><div><h2>${h(env.name)}</h2><span class="fine">${h(env.description || env.address || 'Этот сервер')}</span></div>${badge(...health(env))}</div>${ratesMarkup(data ? summary.rates : null)}<p class="fine gap-top">Новые карточки / минуту</p>${kv(
+      return `<section class="environment-card" style="border-top-color:${h(env.color)}"><div class="panel-header"><div><h2>${h(env.name)}</h2><span class="fine">${h(env.description || env.ssh?.host || env.address || 'Этот сервер')}</span></div>${badge(...health(env))}</div>${ratesMarkup(data ? summary.rates : null)}<p class="fine gap-top">Новые карточки / минуту</p>${kv(
         [
           ['Адаптеры', n(data?.adapters?.length)],
           ['В работе', data ? n(s.importing || 0) : '—'],
@@ -558,8 +560,19 @@ function render() {
   $('breadcrumbs').textContent = `Окружения / ${env.name}${state.provider ? ' / ' + title : ''}`;
   const [status, kind] = health(env);
   let content = `<div class="page-heading"><div><p class="eyebrow">${state.provider ? 'АДАПТЕР / ' + h(env.name.toUpperCase()) : 'ОКРУЖЕНИЕ'}</p><h1>${h(title)}</h1><p class="subtitle">${h(state.provider ? adapters[0]?.provider : env.description || 'Состояние сервиса и всех его адаптеров')}</p></div><div class="heading-actions">${badge(status, kind)}${env.id !== 'local' ? `<button class="small-button" data-action="edit">Настроить</button><button class="small-button" data-action="delete">Удалить</button>` : ''}</div></div>`;
-  if (kind === 'bad' || kind === 'warn')
-    content += `<div class="notice ${kind === 'bad' ? 'error' : ''}">${h(env.error ? 'Нет связи с сервером: ' + env.error + '. Отображается последний полученный снимок.' : env.data?.collectorError ? 'Ошибка сборщика: ' + env.data.collectorError : warnings(env).length ? warnings(env).join('; ') : status + '. Проверьте ошибки и время снимка.')} Снимок: ${h(date(env.data?.updatedUtc))}.</div>`;
+  if (kind === 'bad' || kind === 'warn') {
+    let message;
+    if (env.error) {
+      message = connectionErrors[env.error] || `Нет связи с сервером (${env.error}).`;
+      if (env.data) message += ' Отображается последний полученный снимок.';
+    } else {
+      message = env.data?.collectorError
+        ? `Ошибка сборщика: ${env.data.collectorError}`
+        : warnings(env).join('; ') || `${status}. Проверьте ошибки и время снимка.`;
+    }
+    const snapshot = env.data ? ` Снимок: ${h(date(env.data.updatedUtc))}.` : '';
+    content += `<div class="notice ${kind === 'bad' ? 'error' : ''}">${h(message)}${snapshot}</div>`;
+  }
   if (!env.enabled)
     content +=
       '<div class="notice">Опрос этого окружения отключён. Последние данные могут быть устаревшими.</div>';
@@ -652,6 +665,17 @@ async function refresh(force = false) {
     timer = setTimeout(() => refresh(true), 5000);
   }
 }
+function updateConnectionFields() {
+  const ssh = $('environment-transport').value === 'ssh';
+  $('environment-address-fields').hidden = ssh;
+  $('environment-address').disabled = ssh;
+  $('environment-ssh-fields').hidden = !ssh;
+  $('environment-ssh-host').disabled = !ssh;
+  $('environment-ssh-port').disabled = !ssh;
+}
+
+$('environment-transport').addEventListener('change', updateConnectionFields);
+
 function openEnvironment(edit = false) {
   const env = edit ? current() : null;
   $('environment-form').reset();
@@ -659,6 +683,10 @@ function openEnvironment(edit = false) {
   $('environment-title').textContent = env ? 'Настройка окружения' : 'Новое окружение';
   $('environment-name').value = env?.name || '';
   $('environment-address').value = env?.address || '';
+  $('environment-transport').value = env?.ssh ? 'ssh' : 'http';
+  $('environment-ssh-host').value = env?.ssh?.host || '';
+  $('environment-ssh-port').value = env?.ssh?.apiPort ?? 8770;
+  updateConnectionFields();
   $('environment-key').required = !env;
   $('environment-key').placeholder = env
     ? 'Оставьте пустым, чтобы сохранить ключ'
@@ -709,12 +737,19 @@ $('environment-form').addEventListener('submit', async (event) => {
   button.disabled = true;
   $('environment-error').textContent = '';
   const id = $('environment-id').value;
+  const viaSsh = $('environment-transport').value === 'ssh';
   try {
     const result = await api('/environments' + (id ? '/' + encodeURIComponent(id) : ''), {
       method: id ? 'PUT' : 'POST',
       body: JSON.stringify({
         name: $('environment-name').value,
-        address: $('environment-address').value,
+        address: viaSsh ? null : $('environment-address').value,
+        ssh: viaSsh
+          ? {
+              host: $('environment-ssh-host').value.trim(),
+              apiPort: Number($('environment-ssh-port').value),
+            }
+          : null,
         key: $('environment-key').value,
         color: $('environment-color').value,
         description: $('environment-description').value,

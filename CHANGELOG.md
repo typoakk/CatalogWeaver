@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Add per-environment SSH connections to the monitor client. Saved connections reconnect through OpenSSH on startup and after interruptions.
+
 - Add a standalone PC web client with local server profiles, automatic adapter navigation and job details; importer servers expose only their own monitoring data.
 - Persist distinct first-import/refresh rates over 1/5/15 minutes, server identity and 30-day chart history.
 - Measure HTTP bodies, latency and errors; expose limiter budgets, image profiles, storage and process resources.
